@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Loader2, Save, History, Clock, Pencil, Check, Trash2, X, Play, Download } from "lucide-react";
 import CodeEditor from "./CodeEditor";
 import { useLanguage } from "../hooks/useLanguage";
@@ -29,6 +29,9 @@ interface VersionItemProps {
 
 type SectionTransition = 'default' | 'none' | 'fade' | 'slide' | 'convex' | 'concave' | 'zoom';
 const DEFAULT_ARROW_COLOR = '#ffffff';
+const DEFAULT_AUTO_SLIDE_MS = 5000;
+const MIN_AUTO_SLIDE_MS = 1000;
+const MAX_AUTO_SLIDE_MS = 600000;
 const REVEAL_VERSION = '5.1.0';
 const REVEAL_NOTES_SCRIPT = `<script src="https://cdn.jsdelivr.net/npm/reveal.js@${REVEAL_VERSION}/plugin/notes/notes.js"><\/script>`;
 
@@ -117,6 +120,246 @@ const applyArrowColor = (content: string, color: string): string => {
   }
 
   return `${styleTag}\n${cleaned}`;
+};
+
+const AUTO_SLIDE_SCRIPT_REGEX = /\s*<script[^>]*data-auto-slide-config[^>]*>[\s\S]*?<\/script>/gi;
+
+const clampAutoSlideMs = (value: number): number => {
+  if (!Number.isFinite(value)) return DEFAULT_AUTO_SLIDE_MS;
+  return Math.min(MAX_AUTO_SLIDE_MS, Math.max(MIN_AUTO_SLIDE_MS, Math.round(value)));
+};
+
+const normalizeAutoSlideSecondsInput = (value: string): string => value.replace(/[^\d]/g, '');
+
+const autoSlideMsToSecondsInput = (value: number): string => {
+  const seconds = Math.max(1, Math.round(clampAutoSlideMs(value) / 1000));
+  return String(seconds);
+};
+
+const getAutoSlideMsFromInput = (value: string, fallback: number = DEFAULT_AUTO_SLIDE_MS): number => {
+  const trimmed = normalizeAutoSlideSecondsInput(value).trim();
+  if (!trimmed) return clampAutoSlideMs(fallback);
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return clampAutoSlideMs(fallback);
+
+  return clampAutoSlideMs(parsed * 1000);
+};
+
+const buildAutoSlideScript = (enabled: boolean, intervalMs: number): string => {
+  const normalizedIntervalMs = clampAutoSlideMs(intervalMs);
+  const autoSlideValue = enabled ? normalizedIntervalMs : 0;
+
+  return `<script data-auto-slide-config data-auto-slide-enabled="${enabled ? 'true' : 'false'}" data-auto-slide-ms="${normalizedIntervalMs}">
+(function() {
+  var autoSlideEnabled = ${enabled ? 'true' : 'false'};
+  var baseAutoSlideMs = ${normalizedIntervalMs};
+  var currentCycleMs = baseAutoSlideMs;
+  var remainingAutoSlideMs = baseAutoSlideMs;
+  var cycleStartedAt = null;
+  var pendingCycleSyncId = 0;
+
+  function isTypingTarget(target) {
+    if (!target || !(target instanceof HTMLElement)) return false;
+    var tagName = target.tagName;
+    return target.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT';
+  }
+
+  function getReveal() {
+    return typeof Reveal !== 'undefined' ? Reveal : null;
+  }
+
+  function getRevealConfig() {
+    var reveal = getReveal();
+    return reveal && reveal.getConfig ? reveal.getConfig() : null;
+  }
+
+  function parseAutoSlideMs(value, fallback) {
+    var parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  function getCurrentAutoSlideMs() {
+    var reveal = getReveal();
+    var currentSlide = reveal && reveal.getCurrentSlide ? reveal.getCurrentSlide() : null;
+    if (!currentSlide) return baseAutoSlideMs;
+
+    var fragment = currentSlide.querySelector('.current-fragment[data-autoslide]');
+    var fragmentAutoSlide = fragment ? parseAutoSlideMs(fragment.getAttribute('data-autoslide'), 0) : 0;
+    if (fragmentAutoSlide > 0) return fragmentAutoSlide;
+
+    var slideAutoSlide = parseAutoSlideMs(currentSlide.getAttribute('data-autoslide'), 0);
+    if (slideAutoSlide > 0) return slideAutoSlide;
+
+    var parentNode = currentSlide.parentNode;
+    var parentAutoSlide = parentNode && parentNode.getAttribute
+      ? parseAutoSlideMs(parentNode.getAttribute('data-autoslide'), 0)
+      : 0;
+    if (parentAutoSlide > 0) return parentAutoSlide;
+
+    var nextDuration = baseAutoSlideMs;
+    if (currentSlide.querySelectorAll('.fragment').length === 0) {
+      currentSlide.querySelectorAll('video[data-autoplay], audio[data-autoplay]').forEach(function(el) {
+        var mediaDuration = Number(el.duration);
+        var playbackRate = Number(el.playbackRate) || 1;
+        if (Number.isFinite(mediaDuration) && mediaDuration > 0) {
+          var mediaAutoSlide = (mediaDuration * 1000 / playbackRate) + 1000;
+          if (mediaAutoSlide > nextDuration) {
+            nextDuration = mediaAutoSlide;
+          }
+        }
+      });
+    }
+
+    return nextDuration;
+  }
+
+  function setConfiguredAutoSlide(ms) {
+    var config = getRevealConfig();
+    if (!config) return;
+    config.autoSlide = ms;
+    config.autoSlideStoppable = true;
+  }
+
+  function syncCycleAfterRevealTick(nextDuration) {
+    pendingCycleSyncId += 1;
+    var syncId = pendingCycleSyncId;
+
+    setTimeout(function() {
+      if (syncId !== pendingCycleSyncId) return;
+
+      var reveal = getReveal();
+      var isAutoSliding = !!(reveal && reveal.isAutoSliding && reveal.isAutoSliding());
+      currentCycleMs = parseAutoSlideMs(nextDuration, getCurrentAutoSlideMs());
+      remainingAutoSlideMs = currentCycleMs;
+      cycleStartedAt = isAutoSliding ? Date.now() : null;
+      setConfiguredAutoSlide(baseAutoSlideMs);
+    }, 0);
+  }
+
+  function rememberPauseProgress() {
+    if (!cycleStartedAt) {
+      currentCycleMs = getCurrentAutoSlideMs();
+      remainingAutoSlideMs = currentCycleMs;
+      return;
+    }
+
+    var elapsed = Date.now() - cycleStartedAt;
+    currentCycleMs = parseAutoSlideMs(currentCycleMs, baseAutoSlideMs);
+    remainingAutoSlideMs = Math.max(1, currentCycleMs - elapsed);
+    cycleStartedAt = null;
+  }
+
+  function handleAutoSlideShortcut(event) {
+    if (!autoSlideEnabled) return;
+    if (event.defaultPrevented) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (isTypingTarget(event.target)) return;
+
+    if (event.keyCode === 32 && !event.shiftKey) {
+      if (typeof Reveal !== 'undefined' && Reveal.toggleAutoSlide) {
+        event.preventDefault();
+        event.stopPropagation();
+        Reveal.toggleAutoSlide();
+      }
+      return;
+    }
+
+    if (event.keyCode === 65 && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function applyOpenSlidesAutoSlide() {
+    if (typeof Reveal === 'undefined' || !Reveal.configure) return false;
+    Reveal.configure({
+      autoSlide: ${autoSlideValue},
+      autoSlideStoppable: true
+    });
+    currentCycleMs = getCurrentAutoSlideMs();
+    remainingAutoSlideMs = currentCycleMs;
+    cycleStartedAt = autoSlideEnabled ? Date.now() : null;
+    return true;
+  }
+
+  if (autoSlideEnabled) {
+    document.addEventListener('autoslidepaused', function() {
+      rememberPauseProgress();
+    });
+
+    document.addEventListener('autoslideresumed', function() {
+      var resumeDuration = Math.max(1, parseAutoSlideMs(remainingAutoSlideMs, getCurrentAutoSlideMs()));
+      setConfiguredAutoSlide(resumeDuration);
+      syncCycleAfterRevealTick(resumeDuration);
+    });
+
+    document.addEventListener('slidechanged', function() {
+      syncCycleAfterRevealTick(getCurrentAutoSlideMs());
+    });
+
+    document.addEventListener('fragmentshown', function() {
+      syncCycleAfterRevealTick(getCurrentAutoSlideMs());
+    });
+
+    document.addEventListener('fragmenthidden', function() {
+      syncCycleAfterRevealTick(getCurrentAutoSlideMs());
+    });
+  }
+
+  if (!applyOpenSlidesAutoSlide()) {
+    window.addEventListener('load', function() {
+      if (applyOpenSlidesAutoSlide() && autoSlideEnabled) {
+        syncCycleAfterRevealTick(getCurrentAutoSlideMs());
+      }
+    }, { once: true });
+  }
+  else if (autoSlideEnabled) {
+    syncCycleAfterRevealTick(getCurrentAutoSlideMs());
+  }
+
+  document.addEventListener('keydown', handleAutoSlideShortcut, true);
+})();
+<\/script>`;
+};
+
+const getAutoSlideSelection = (content: string): { enabled: boolean; intervalMs: number } => {
+  const markerMatch = content.match(/<script[^>]*data-auto-slide-config[^>]*>/i)?.[0];
+  if (markerMatch) {
+    const enabledMatch = markerMatch.match(/data-auto-slide-enabled="(true|false)"/i);
+    const intervalMatch = markerMatch.match(/data-auto-slide-ms="(\d+)"/i);
+    const intervalMs = clampAutoSlideMs(Number(intervalMatch?.[1] || DEFAULT_AUTO_SLIDE_MS));
+    return {
+      enabled: enabledMatch?.[1]?.toLowerCase() === 'true',
+      intervalMs,
+    };
+  }
+
+  const configMatch = content.match(/\bautoSlide\s*:\s*(false|\d+)/i);
+  if (!configMatch) {
+    return { enabled: false, intervalMs: DEFAULT_AUTO_SLIDE_MS };
+  }
+
+  if (configMatch[1].toLowerCase() === 'false') {
+    return { enabled: false, intervalMs: DEFAULT_AUTO_SLIDE_MS };
+  }
+
+  const intervalMs = clampAutoSlideMs(Number(configMatch[1]));
+  return {
+    enabled: intervalMs > 0,
+    intervalMs,
+  };
+};
+
+const applyAutoSlide = (content: string, enabled: boolean, intervalMs: number): string => {
+  const cleaned = content.replace(AUTO_SLIDE_SCRIPT_REGEX, '');
+  const scriptTag = buildAutoSlideScript(enabled, intervalMs);
+
+  if (cleaned.includes('</body>')) {
+    return cleaned.replace('</body>', `  ${scriptTag}\n</body>`);
+  }
+
+  return `${cleaned}\n${scriptTag}`;
 };
 
 const ensureRevealNotesSupport = (html: string): string => {
@@ -396,6 +639,8 @@ export default function SlidePreview({
   const [sectionTransition, setSectionTransition] = useState<SectionTransition>('default');
   const [arrowColor, setArrowColor] = useState<string>(DEFAULT_ARROW_COLOR);
   const [arrowColorInput, setArrowColorInput] = useState<string>(DEFAULT_ARROW_COLOR);
+  const [isAutoPlayEnabled, setIsAutoPlayEnabled] = useState(false);
+  const [autoPlaySecondsInput, setAutoPlaySecondsInput] = useState<string>(autoSlideMsToSecondsInput(DEFAULT_AUTO_SLIDE_MS));
   const [isArrowColorOpen, setIsArrowColorOpen] = useState(false);
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string>("");
@@ -458,8 +703,22 @@ export default function SlidePreview({
 </html>`;
 
   const [localContent, setLocalContent] = useState<string>(slidesData || PLACEHOLDER_SLIDES);
+  const autoPlayIntervalMs = getAutoSlideMsFromInput(autoPlaySecondsInput);
+  const contentWithSectionTransition = applySectionTransition(localContent, sectionTransition);
   const normalizedContent = applyArrowColor(
-    applySectionTransition(localContent, sectionTransition),
+    applyAutoSlide(
+      contentWithSectionTransition,
+      isAutoPlayEnabled,
+      autoPlayIntervalMs
+    ),
+    arrowColor
+  );
+  const editorPreviewContent = applyArrowColor(
+    applyAutoSlide(
+      contentWithSectionTransition,
+      false,
+      autoPlayIntervalMs
+    ),
     arrowColor
   );
 
@@ -482,14 +741,20 @@ export default function SlidePreview({
       setLocalContent(extracted);
       setSectionTransition(getSectionTransitionSelection(extracted));
       const nextArrowColor = getArrowColorSelection(extracted);
+      const nextAutoSlide = getAutoSlideSelection(extracted);
       setArrowColor(nextArrowColor);
       setArrowColorInput(nextArrowColor);
+      setIsAutoPlayEnabled(nextAutoSlide.enabled);
+      setAutoPlaySecondsInput(autoSlideMsToSecondsInput(nextAutoSlide.intervalMs));
     } else {
       setLocalContent(PLACEHOLDER_SLIDES);
       setSectionTransition(getSectionTransitionSelection(PLACEHOLDER_SLIDES));
       const nextArrowColor = getArrowColorSelection(PLACEHOLDER_SLIDES);
+      const nextAutoSlide = getAutoSlideSelection(PLACEHOLDER_SLIDES);
       setArrowColor(nextArrowColor);
       setArrowColorInput(nextArrowColor);
+      setIsAutoPlayEnabled(nextAutoSlide.enabled);
+      setAutoPlaySecondsInput(autoSlideMsToSecondsInput(nextAutoSlide.intervalMs));
     }
     setOverflowSlides([]);
   }, [slidesData, t]);
@@ -512,8 +777,16 @@ export default function SlidePreview({
   useEffect(() => {
     const handleMessage = (e: MessageEvent) => {
       if (e.data?.type === 'inline-editor-save' && e.data.html) {
-        setLocalContent(e.data.html);
-        if (onEditorChange) onEditorChange(e.data.html);
+        const updatedContent = applyArrowColor(
+          applyAutoSlide(
+            applySectionTransition(e.data.html, sectionTransition),
+            isAutoPlayEnabled,
+            autoPlayIntervalMs
+          ),
+          arrowColor
+        );
+        setLocalContent(updatedContent);
+        if (onEditorChange) onEditorChange(updatedContent);
       }
       if (e.data?.type === 'overflow-detected') {
         setOverflowSlides(e.data.slides || []);
@@ -521,7 +794,7 @@ export default function SlidePreview({
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onEditorChange]);
+  }, [arrowColor, autoPlayIntervalMs, isAutoPlayEnabled, onEditorChange, sectionTransition]);
 
   const handleViewChange = (mode: ViewMode) => {
     if (mode === viewMode) return;
@@ -554,6 +827,30 @@ export default function SlidePreview({
       }
       return updated;
     });
+  };
+
+  const commitAutoPlayConfig = (enabled: boolean, secondsValue: string) => {
+    const nextIntervalMs = getAutoSlideMsFromInput(secondsValue);
+    const normalizedSeconds = autoSlideMsToSecondsInput(nextIntervalMs);
+
+    setIsAutoPlayEnabled(enabled);
+    setAutoPlaySecondsInput(normalizedSeconds);
+    setLocalContent((prev) => {
+      const updated = applyAutoSlide(prev, enabled, nextIntervalMs);
+      if (onEditorChange && updated !== prev) {
+        onEditorChange(updated);
+      }
+      return updated;
+    });
+  };
+
+  const handleAutoPlayToggle = (enabled: boolean) => {
+    commitAutoPlayConfig(enabled, autoPlaySecondsInput);
+  };
+
+  const handleAutoPlaySecondsKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') return;
+    commitAutoPlayConfig(isAutoPlayEnabled, autoPlaySecondsInput);
   };
 
   const handlePresent = () => {
@@ -780,7 +1077,7 @@ export default function SlidePreview({
       </div>
 
       {viewMode === "editor" && (
-        <div className="flex items-center gap-4 px-4 py-2 border-b border-border bg-panel/80 relative">
+        <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-panel/80 relative">
           <label className="flex items-center gap-2 text-sm text-gray-300">
             <span className="text-gray-400">{t('slidePreview.transition')}</span>
             <select
@@ -838,6 +1135,40 @@ export default function SlidePreview({
             )}
           </div>
 
+          <div className="flex items-center gap-3 text-sm text-gray-300">
+            <label className="flex items-center gap-2">
+              <span className="text-gray-400">{t('slidePreview.autoPlay')}</span>
+              <input
+                type="checkbox"
+                checked={isAutoPlayEnabled}
+                onChange={(e) => handleAutoPlayToggle(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-gray-400">{t('slidePreview.everySeconds')}</span>
+              <input
+                type="number"
+                min={1}
+                max={Math.floor(MAX_AUTO_SLIDE_MS / 1000)}
+                step={1}
+                inputMode="numeric"
+                value={autoPlaySecondsInput}
+                onChange={(e) => setAutoPlaySecondsInput(normalizeAutoSlideSecondsInput(e.target.value))}
+                onBlur={() => {
+                  if (isAutoPlayEnabled) {
+                    commitAutoPlayConfig(true, autoPlaySecondsInput);
+                  } else {
+                    setAutoPlaySecondsInput(autoSlideMsToSecondsInput(getAutoSlideMsFromInput(autoPlaySecondsInput)));
+                  }
+                }}
+                onKeyDown={handleAutoPlaySecondsKeyDown}
+                className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!isAutoPlayEnabled}
+              />
+            </label>
+          </div>
+
         </div>
       )}
 
@@ -892,7 +1223,7 @@ export default function SlidePreview({
               <iframe
                 key={sectionTransition}
                 title="Slide Editor"
-                srcDoc={injectInlineEditor(normalizedContent, inlineEditorLabels)}
+                srcDoc={injectInlineEditor(editorPreviewContent, inlineEditorLabels)}
                 style={{
                   border: 0,
                   borderRadius: '8px',

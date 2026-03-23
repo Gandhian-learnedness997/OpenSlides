@@ -8,7 +8,8 @@
     "server": "node --watch server.js",
     "build": "vite build",
     "start": "vite build && node server.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:gemini": "node scripts/test-gemini.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

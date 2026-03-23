@@ -17,8 +17,6 @@ interface FileManagerProps {
 
 export default function FileManager({ projectId, onFilesChange }: FileManagerProps) {
   const [files, setFiles] = useState<LocalFile[]>([]);
-  const [uploading, setUploading] = useState<boolean>(false);
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState<boolean>(false);
   const [duplicateFiles, setDuplicateFiles] = useState<string[]>([]);
@@ -91,14 +89,9 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
   };
 
   const processUpload = async (filesToUpload: File[]) => {
-    setUploading(true);
-    setUploadProgress(0);
-
     const newFiles: LocalFile[] = [];
-    const totalFiles = filesToUpload.length;
 
-    for (let i = 0; i < filesToUpload.length; i++) {
-      const file = filesToUpload[i];
+    for (const file of filesToUpload) {
       const dataUrl = await readFileAsDataUrl(file);
       newFiles.push({
         name: file.name,
@@ -106,7 +99,6 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
         mimeType: file.type || 'application/octet-stream',
         size: file.size,
       });
-      setUploadProgress(Math.round(((i + 1) / totalFiles) * 100));
     }
 
     // Merge with existing (overwrite duplicates)
@@ -121,8 +113,6 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
     }
 
     saveFiles(merged);
-    setUploading(false);
-    setUploadProgress(0);
   };
 
   const readFileAsDataUrl = (file: File): Promise<string> => {
@@ -191,33 +181,18 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
 
       <div className="p-4 space-y-4 flex-1 overflow-hidden flex flex-col">
         <label
-          className={`flex items-center justify-center gap-2 w-full py-2.5 border border-border rounded-full text-sm font-medium cursor-pointer hover:bg-panel transition-colors ${
-            uploading ? "opacity-50 cursor-not-allowed" : ""
-          }`}
+          className="flex items-center justify-center gap-2 w-full py-2.5 border border-border rounded-full text-sm font-medium cursor-pointer hover:bg-panel transition-colors"
         >
           <Plus size={16} />
-          <span>{uploading ? t('fileManager.uploading') : t('fileManager.addSources')}</span>
+          <span>{t('fileManager.addSources')}</span>
           <input
             type="file"
             className="hidden"
             onChange={handleUpload}
-            disabled={uploading}
             multiple
             accept=".png,.jpeg,.jpg,.svg,.pdf,.txt,.text,.csv,.md,.py,.sh"
           />
         </label>
-
-        {uploading && (
-          <div className="w-full bg-gray-700 rounded-full h-2.5 mb-2">
-            <div
-              className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-              style={{ width: `${uploadProgress}%` }}
-            ></div>
-            <p className="text-xs text-center mt-1 text-gray-400">
-              {uploadProgress}%
-            </p>
-          </div>
-        )}
 
         <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
           {files.length === 0 ? (

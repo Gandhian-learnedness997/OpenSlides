@@ -2,7 +2,7 @@
 // Core Domain Types
 // ============================================================
 
-export type AIProvider = 'gemini' | 'claude' | 'gpt';
+export type AIProvider = 'gemini' | 'claude' | 'openai';
 
 export interface AIConfig {
   provider: AIProvider;
@@ -26,6 +26,7 @@ export interface ChatUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  thinkingTokens: number;
   totalTokens: number;
   estimatedPrice: string;
 }
@@ -39,7 +40,19 @@ export interface ChatMessage {
 
 export interface GenerateSlidesResponse {
   content: string;
+  chatText: string;
   usage: ChatUsage;
+}
+
+export interface FileSnapshot {
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface ConversationContext {
+  summary: string;
+  fileSnapshot: FileSnapshot[];
 }
 
 // ============================================================
@@ -64,6 +77,7 @@ export interface SlideInfo {
 export interface LoadedContent {
   html: string;
   chat: ChatMessage[];
+  context: ConversationContext | null;
 }
 
 // ============================================================

@@ -19,6 +19,7 @@ interface SlidePreviewProps {
   isCreatingNewChat: boolean;
   onEditorChange?: (html: string) => void;
   onFixOverflow?: (prompt: string) => void;
+  projectId?: string;
 }
 
 interface VersionItemProps {
@@ -58,13 +59,86 @@ const SCROLLABLE_STYLE = `<style data-scrollable>
 }
 </style>`;
 
+/**
+ * Convert relative /api/projects/... image URLs to absolute URLs
+ * so they work in blob: URLs (present) and downloaded HTML files.
+ */
+const makeImageUrlsAbsolute = (html: string): string => {
+  const origin = window.location.origin;
+  return html.replace(
+    /(src=["'])\/api\/projects\//g,
+    `$1${origin}/api/projects/`
+  );
+};
+
+/**
+ * Fetch all images referenced via /api/projects/ URLs and embed them
+ * as inline base64 data URIs for standalone HTML files.
+ */
+const inlineImages = async (html: string): Promise<string> => {
+  const imgRegex = /src=["'](https?:\/\/[^"']*\/api\/projects\/[^"']+)["']/g;
+  const matches = [...html.matchAll(imgRegex)];
+  if (matches.length === 0) return html;
+
+  let result = html;
+  for (const match of matches) {
+    const url = match[1];
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const blob = await resp.blob();
+      const dataUrl = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+      result = result.split(url).join(dataUrl);
+    } catch {
+      // Keep original URL if fetch fails
+    }
+  }
+  return result;
+};
+
+const ASPECT_RATIO_STYLE = `<style data-aspect-ratio>
+html, body {
+  width: 100%; height: 100%; margin: 0;
+  overflow: hidden; background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+.reveal {
+  width: 1280px; height: 720px;
+  max-width: 100%; max-height: 100%;
+}
+</style>`;
+
+const ASPECT_RATIO_SCRIPT = `<script data-aspect-ratio>
+(function() {
+  function resizeReveal() {
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var scale = Math.min(vw / 1280, vh / 720);
+    var el = document.querySelector('.reveal');
+    if (!el) return;
+    el.style.width = Math.floor(1280 * scale) + 'px';
+    el.style.height = Math.floor(720 * scale) + 'px';
+  }
+  resizeReveal();
+  window.addEventListener('resize', resizeReveal);
+})();
+<\/script>`;
+
 export const buildPresentationHtml = (content: string) => {
   if (isCompleteHtml(content)) {
-    // Inject scrollable styles into complete HTML
-    if (content.includes('</head>')) {
-      return content.replace('</head>', SCROLLABLE_STYLE + '\n</head>');
+    let result = content;
+    // Inject aspect ratio + scrollable styles into complete HTML
+    if (result.includes('</head>')) {
+      result = result.replace('</head>', ASPECT_RATIO_STYLE + '\n' + SCROLLABLE_STYLE + '\n</head>');
     }
-    return content;
+    // Inject resize script before closing body
+    if (result.includes('</body>')) {
+      result = result.replace('</body>', ASPECT_RATIO_SCRIPT + '\n</body>');
+    }
+    return result;
   }
 
   // Legacy: wrap <style> + <section> fragments
@@ -192,7 +266,8 @@ export default function SlidePreview({
   onDeleteVersion,
   isCreatingNewChat,
   onEditorChange,
-  onFixOverflow
+  onFixOverflow,
+  projectId
 }: SlidePreviewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("editor");
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null);
@@ -321,7 +396,8 @@ export default function SlidePreview({
 
   const handlePresent = () => {
     const content = localContent;
-    const html = buildPresentationHtml(content);
+    // Make image URLs absolute so they resolve from blob: context
+    const html = makeImageUrlsAbsolute(buildPresentationHtml(content));
     const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
 
     setPresentationUrl((currentUrl) => {
@@ -330,9 +406,11 @@ export default function SlidePreview({
     });
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     const content = localContent;
-    const html = buildPresentationHtml(content);
+    // Make URLs absolute first, then inline images as base64 for standalone file
+    let html = makeImageUrlsAbsolute(buildPresentationHtml(content));
+    html = await inlineImages(html);
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -472,17 +550,17 @@ export default function SlidePreview({
           <div className="flex bg-gray-800 rounded-lg p-1">
             <button
               onClick={() => handleViewChange("editor")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`w-16 py-1.5 rounded-md text-sm font-medium transition-all text-center ${
                 viewMode === "editor"
                   ? "bg-gray-600 text-white shadow-sm"
                   : "text-gray-400 hover:text-gray-200"
               }`}
             >
-              Editor
+              {t('slidePreview.editor')}
             </button>
             <button
               onClick={() => handleViewChange("code")}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`w-16 py-1.5 rounded-md text-sm font-medium transition-all text-center ${
                 viewMode === "code"
                   ? "bg-gray-600 text-white shadow-sm"
                   : "text-gray-400 hover:text-gray-200"
@@ -505,7 +583,7 @@ export default function SlidePreview({
           <button
             onClick={handleSave}
             disabled={isSaving}
-            className={`flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors ${
+            className={`flex items-center justify-center gap-2 w-24 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors ${
               isSaving ? "opacity-70 cursor-not-allowed" : ""
             }`}
           >

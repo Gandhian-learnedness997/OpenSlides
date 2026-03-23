@@ -1,4 +1,4 @@
-import { SlideInfo, VersionState, LoadedContent, ChatMessage } from '@/types';
+import { SlideInfo, VersionState, LoadedContent, ChatMessage, ConversationContext } from '@/types';
 
 export const getSlideInfo = async (projectId: string): Promise<SlideInfo | null> => {
   try {
@@ -24,6 +24,7 @@ export const saveState = async (
   stateIndex: number,
   htmlContent: string,
   chatHistory: ChatMessage[] | null,
+  context: ConversationContext | null,
   isAuto: boolean = false
 ): Promise<VersionState> => {
   const stateId = `${isAuto ? 'auto' : 'state'}_${stateIndex}`;
@@ -35,6 +36,7 @@ export const saveState = async (
       stateId,
       html: htmlContent,
       chat: chatHistory || [],
+      context: context || null,
     }),
   });
 
@@ -59,6 +61,7 @@ export const loadStateContent = async (projectId: string, stateId: string): Prom
   return {
     html: data.html || '',
     chat: data.chat || [],
+    context: data.context || null,
   };
 };
 

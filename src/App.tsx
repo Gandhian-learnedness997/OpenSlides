@@ -10,13 +10,6 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
-  // Check if API key is configured, prompt settings on first visit
-  useEffect(() => {
-    const apiKey = localStorage.getItem('openslides_api_key');
-    if (!apiKey) {
-      setIsSettingsModalOpen(true);
-    }
-  }, []);
 
   // Restore project from URL on mount
   useEffect(() => {

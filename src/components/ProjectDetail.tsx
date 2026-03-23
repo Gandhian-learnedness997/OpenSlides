@@ -6,7 +6,7 @@ import { generateSlides } from "../lib/ai";
 import { useLanguage } from "../hooks/useLanguage";
 import { getSlideInfo, saveSlideInfo, saveState, loadStateContent, deleteState } from "../lib/versionControl";
 import { CheckCircle, AlertCircle } from "lucide-react";
-import { Project, SlideInfo, Toast, ChatMessage, LocalFile } from "@/types";
+import { Project, SlideInfo, Toast, ChatMessage, LocalFile, ConversationContext } from "@/types";
 
 interface ProjectDetailProps {
   project: Project;
@@ -23,6 +23,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState<Toast>({ show: false, message: "", type: "success" });
   const [loadedChatHistory, setLoadedChatHistory] = useState<ChatMessage[] | null>(null);
+  const [conversationSummary, setConversationSummary] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
@@ -37,6 +38,46 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const chatHistoryRef = useRef<ChatMessage[]>([]);
   const isResizingLeft = useRef(false);
   const isResizingRight = useRef(false);
+
+  const buildConversationSummary = (history: ChatMessage[], currentFiles: LocalFile[]): string => {
+    const recent = history
+      .filter(msg => !msg.isError)
+      .slice(-6)
+      .map(msg => {
+        const normalized = msg.role === 'assistant' && /<!doctype\s+html/i.test(msg.content)
+          ? 'Updated the presentation HTML.'
+          : msg.content.replace(/\s+/g, ' ').trim();
+        return {
+          role: msg.role,
+          content: normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized,
+        };
+      });
+
+    const lines: string[] = [];
+    const userMessages = recent.filter(msg => msg.role === 'user');
+    const assistantMessages = recent.filter(msg => msg.role === 'assistant');
+
+    if (userMessages.length > 0) {
+      lines.push(`Recent user requests: ${userMessages.map(msg => msg.content).join(' | ')}`);
+    }
+    if (assistantMessages.length > 0) {
+      lines.push(`Recent assistant work: ${assistantMessages.map(msg => msg.content).join(' | ')}`);
+    }
+    if (currentFiles.length > 0) {
+      lines.push(`Project source files: ${currentFiles.map(file => file.name).join(', ')}`);
+    }
+
+    return lines.join('\n');
+  };
+
+  const buildConversationContext = (history: ChatMessage[], currentFiles: LocalFile[]): ConversationContext => ({
+    summary: buildConversationSummary(history, currentFiles),
+    fileSnapshot: currentFiles.map(file => ({
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+    })),
+  });
 
   // Load initial state
   useEffect(() => {
@@ -61,11 +102,12 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         }
 
         if (latestState) {
-          const { html, chat } = await loadStateContent(project.id, latestState.path);
+          const { html, chat, context } = await loadStateContent(project.id, latestState.path);
           setSlidesData(html);
           if (chat && chat.length > 0) {
             setLoadedChatHistory(chat);
           }
+          setConversationSummary(context?.summary || '');
           setCurrentVersion(latestState.id);
         }
       } catch (error) {
@@ -102,9 +144,10 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         userPrompt,
         filteredHistory,
         currentSlidesForApi,
-        uploadedFiles
+        uploadedFiles,
+        conversationSummary
       );
-      const { content, usage } = responseData;
+      const { content, chatText, usage } = responseData;
       setSlidesData(content);
 
       // Auto Save
@@ -118,10 +161,11 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       const historyToSave: ChatMessage[] = [
         ...filteredHistory,
         { role: 'user', content: userPrompt },
-        { role: 'assistant', content: content, usage: usage }
+        { role: 'assistant', content: chatText || content, usage: usage }
       ];
+      const nextContext = buildConversationContext(historyToSave, uploadedFiles);
 
-      const newState = await saveState(project.id, nextAutoIndex, content, historyToSave, true);
+      const newState = await saveState(project.id, nextAutoIndex, content, historyToSave, nextContext, true);
       let newAutoStates = [...currentAutoStates, newState];
 
       if (newAutoStates.length > 3) {
@@ -140,8 +184,9 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       await saveSlideInfo(project.id, newInfo);
       setSlideInfo(newInfo);
       setCurrentVersion(newState.id);
+      setConversationSummary(nextContext.summary);
 
-      return { content, usage };
+      return { content, chatText, usage };
     } catch (error) {
       console.error("Failed to generate slides:", error);
       throw error;
@@ -178,7 +223,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       const nextIndex = maxManualIndex + 1;
 
       const historyToSave = filterChatHistory(chatHistoryRef.current);
-      const newState = await saveState(project.id, nextIndex, content, historyToSave, false);
+      const currentContext = buildConversationContext(historyToSave, uploadedFiles);
+      const newState = await saveState(project.id, nextIndex, content, historyToSave, currentContext, false);
 
       const newInfo: SlideInfo = {
         ...slideInfo,
@@ -206,13 +252,14 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       const state = manualStates.find(s => s.id === stateId) || autoStates.find(s => s.id === stateId);
       if (!state) throw new Error("State not found");
 
-      const { html, chat } = await loadStateContent(project.id, state.path);
+      const { html, chat, context } = await loadStateContent(project.id, state.path);
       setSlidesData(html);
       if (chat && chat.length > 0) {
         setLoadedChatHistory(chat);
       } else {
         setLoadedChatHistory(null);
       }
+      setConversationSummary(context?.summary || '');
       setCurrentVersion(stateId);
     } catch (error) {
       console.error("Failed to load version:", error);
@@ -288,7 +335,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         const nextAutoIndex = maxAutoIndex + 1;
 
         const historyToSave = filterChatHistory(chatHistoryRef.current);
-        const newState = await saveState(project.id, nextAutoIndex, slidesData, historyToSave, true);
+        const currentContext = buildConversationContext(historyToSave, uploadedFiles);
+        const newState = await saveState(project.id, nextAutoIndex, slidesData, historyToSave, currentContext, true);
         let newAutoStates = [...autoStates, newState];
 
         if (newAutoStates.length > 3) {
@@ -306,6 +354,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         await saveSlideInfo(project.id, newInfo);
         setSlideInfo(newInfo);
         setCurrentVersion(newState.id);
+        setConversationSummary(currentContext.summary);
       } catch (error) {
         console.error("Auto save failed:", error);
       }
@@ -318,6 +367,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       await autoSaveCurrentState();
       setLoadedChatHistory(null);
       chatHistoryRef.current = [];
+      setConversationSummary("");
     } finally {
       setIsCreatingNewChat(false);
     }
@@ -413,6 +463,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             onDeleteVersion={handleDeleteVersion}
             onEditorChange={(html: string) => setSlidesData(html)}
             onFixOverflow={(prompt: string) => handleGenerateSlides(prompt, true)}
+            projectId={project.id}
           />
         </div>
 

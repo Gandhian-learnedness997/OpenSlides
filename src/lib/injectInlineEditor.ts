@@ -181,34 +181,102 @@ export function injectInlineEditor(html: string): string {
     }
   });
 
-  // Overflow detection: wait for Reveal to be available, then check after ready
-  function waitForReveal() {
-    if (typeof Reveal !== 'undefined' && Reveal.isReady && Reveal.isReady()) {
-      checkOverflow();
-    } else if (typeof Reveal !== 'undefined') {
-      Reveal.on('ready', function() { checkOverflow(); });
-    } else {
-      setTimeout(waitForReveal, 200);
-    }
-  }
-  setTimeout(waitForReveal, 300);
-
+  // Overflow detection: check all slides including nested vertical sections.
+  // Runs multiple times to catch late-loading content (images, fonts, CSS).
   function checkOverflow() {
-    var sections = document.querySelectorAll('.reveal .slides > section');
+    var topSections = document.querySelectorAll('.reveal .slides > section');
     var overflowing = [];
-    sections.forEach(function(section, i) {
-      if (section.querySelector(':scope > section')) return;
-      if (section.scrollHeight > section.clientHeight + 5) {
-        var titleEl = section.querySelector('h1, h2, h3');
-        var title = titleEl ? titleEl.textContent.trim() : '';
-        overflowing.push({ index: i + 1, title: title });
+    var slideIndex = 0;
+
+    topSections.forEach(function(section) {
+      var nested = section.querySelectorAll(':scope > section');
+      if (nested.length > 0) {
+        // Vertical slide stack — check each child
+        nested.forEach(function(child) {
+          slideIndex++;
+          checkSection(child, slideIndex, overflowing);
+        });
+      } else {
+        slideIndex++;
+        checkSection(section, slideIndex, overflowing);
       }
     });
+
     window.parent.postMessage({
       type: 'overflow-detected',
       slides: overflowing
     }, '*');
   }
+
+  function checkSection(section, index, overflowing) {
+    var isOverflow = false;
+
+    // Check the section itself
+    if (section.scrollHeight > section.clientHeight + 5) {
+      isOverflow = true;
+    }
+
+    // Also check inner containers that may clip overflow (overflow: hidden/auto)
+    if (!isOverflow) {
+      var children = section.querySelectorAll('*');
+      for (var j = 0; j < children.length; j++) {
+        var child = children[j];
+        var style = window.getComputedStyle(child);
+        var ov = style.overflow + style.overflowY;
+        if (ov.indexOf('hidden') !== -1 || ov.indexOf('auto') !== -1 || ov.indexOf('scroll') !== -1) {
+          if (child.scrollHeight > child.clientHeight + 5) {
+            isOverflow = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (isOverflow) {
+      var titleEl = section.querySelector('h1, h2, h3');
+      var title = titleEl ? titleEl.textContent.trim() : '';
+      overflowing.push({ index: index, title: title });
+    }
+  }
+
+  // Wait for Reveal, then check multiple times to catch late layout
+  function waitForReveal() {
+    if (typeof Reveal !== 'undefined' && Reveal.isReady && Reveal.isReady()) {
+      scheduleChecks();
+    } else if (typeof Reveal !== 'undefined') {
+      Reveal.on('ready', function() { scheduleChecks(); });
+    } else {
+      setTimeout(waitForReveal, 200);
+    }
+  }
+
+  function scheduleChecks() {
+    // Check at multiple intervals to catch fonts/images loading
+    checkOverflow();
+    setTimeout(checkOverflow, 500);
+    setTimeout(checkOverflow, 1500);
+    setTimeout(checkOverflow, 3000);
+  }
+
+  setTimeout(waitForReveal, 300);
+
+  // Also re-check when images finish loading
+  document.querySelectorAll('img').forEach(function(img) {
+    if (!img.complete) {
+      img.addEventListener('load', function() { setTimeout(checkOverflow, 100); });
+      img.addEventListener('error', function() { setTimeout(checkOverflow, 100); });
+    }
+  });
+
+  // Re-check on slide change (user navigating may reveal overflow on other slides)
+  function waitForRevealEvents() {
+    if (typeof Reveal !== 'undefined' && Reveal.on) {
+      Reveal.on('slidechanged', function() { setTimeout(checkOverflow, 200); });
+    } else {
+      setTimeout(waitForRevealEvents, 500);
+    }
+  }
+  waitForRevealEvents();
 })();
 <\/script>`;
 

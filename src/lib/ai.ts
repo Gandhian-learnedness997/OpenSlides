@@ -217,17 +217,19 @@ EXAMPLE — changing a slide title and fixing font size:
 ═══════════════════════════════════════════
 IMPORTANT RULES
 ═══════════════════════════════════════════
-- For NEW presentations: Output ONE complete HTML file in a \`\`\`html code block. Nothing else before or after.
-- For EDITS to existing presentations: Output search/replace blocks in a \`\`\`diff code block.
+- Always start your response with a brief explanation (1-3 sentences) of what you're doing and why, BEFORE any code block. This helps the user understand your design choices or changes.
+- For NEW presentations: Then output ONE complete HTML file in a \`\`\`html code block.
+- For EDITS to existing presentations: Then output search/replace blocks in a \`\`\`diff code block.
 - CSS and HTML in one file. No external stylesheets.
 - Use flexbox/grid for layout. NEVER use absolute positioning.
 - Every slide must fit within 1280×720. Do not let content overflow.
 - Use <section> for slides, NOT <div> or any other element.
 - Include the reveal.js CDN scripts and initialization in the output (for new presentations).
 - Be creative with colors. Don't use the same palette every time.
-- If uploaded images are provided with URLs, use them in the presentation with <img> tags.
-  Use the EXACT signed URL provided. Style images with object-fit, border-radius, etc. as needed.
-  Example: <img src="[signed-url]" style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 8px;" />
+- If uploaded images are listed with URLs, use them in the presentation with <img> tags.
+  Use the EXACT URL provided — do NOT modify or guess image URLs.
+  Style images with object-fit, border-radius, box-shadow, etc. as needed.
+  Example: <img src="/api/projects/abc123/file/diagram.png" style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 8px;" />
 `;
 
 // ============================================================
@@ -236,6 +238,16 @@ IMPORTANT RULES
 
 // Cached settings loaded from server
 let _cachedConfig: AIConfig | null = null;
+
+function isNativeOpenAIBaseUrl(baseUrl: string): boolean {
+  const normalized = (baseUrl || 'https://api.openai.com/v1').trim();
+  try {
+    const url = new URL(normalized);
+    return url.hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
 
 export async function loadConfig(): Promise<AIConfig> {
   try {
@@ -262,7 +274,7 @@ function getDefaultModel(provider: AIProvider): string {
   switch (provider) {
     case 'gemini': return 'gemini-3.1-pro-preview';
     case 'claude': return 'claude-sonnet-4.6';
-    case 'gpt': return 'gpt-5.4';
+    case 'openai': return 'gpt-5.4';
   }
 }
 
@@ -301,7 +313,7 @@ function getPricing(provider: AIProvider, model: string, inputTokens: number): P
     return { input: 3.0, cached: 0.30, output: 15.0 };
   }
 
-  // GPT
+  // OpenAI
   if (model.includes('gpt-4o-mini')) {
     return { input: 0.15, cached: 0.075, output: 0.60 };
   }
@@ -321,13 +333,15 @@ function computePrice(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
+  thinkingTokens: number,
 ): string {
   const pricing = getPricing(provider, model, inputTokens);
   const uncachedInput = Math.max(0, inputTokens - cachedTokens);
+  const totalOutput = outputTokens + (thinkingTokens || 0);
   const price =
     (uncachedInput / 1_000_000) * pricing.input +
     (cachedTokens / 1_000_000) * pricing.cached +
-    (outputTokens / 1_000_000) * pricing.output;
+    (totalOutput / 1_000_000) * pricing.output;
   return price.toFixed(6);
 }
 
@@ -363,97 +377,131 @@ function applyDiffs(diffContent: string, currentHtml: string): string {
   return result;
 }
 
+function normalizeHistoryMessage(msg: ChatMessage): string {
+  if (msg.role === 'assistant' && /<!doctype\s+html/i.test(msg.content)) {
+    return '[Generated presentation HTML — see current version below]';
+  }
+  return msg.content;
+}
+
+function buildReferenceMessage(
+  projectId: string,
+  textContents: string[],
+  fileAttachments: Array<{ data: string; mimeType: string }>,
+  imageFiles: Array<{ name: string; mimeType: string }>
+): { role: string; content: string; files?: Array<{ data: string; mimeType: string }> } | null {
+  if (textContents.length === 0 && fileAttachments.length === 0 && imageFiles.length === 0) return null;
+
+  const sections: string[] = ['[Project reference material]'];
+  if (textContents.length > 0) {
+    sections.push('Use these uploaded text documents as source material:');
+    sections.push(textContents.join('\n\n'));
+  }
+  if (fileAttachments.length > 0) {
+    sections.push('Attached images and PDFs are also part of the project context.');
+  }
+  // Tell the AI the exact URLs for images so it can reference them in <img> tags
+  if (imageFiles.length > 0) {
+    sections.push('The following uploaded images are available. Use them in the slides with <img> tags using the EXACT URLs below:');
+    for (const f of imageFiles) {
+      sections.push(`- ${f.name}: /api/projects/${projectId}/file/${encodeURIComponent(f.name)}`);
+    }
+  }
+
+  return {
+    role: 'user',
+    content: sections.join('\n\n'),
+    files: fileAttachments.length > 0 ? fileAttachments : undefined,
+  };
+}
+
 // ============================================================
 // Main generation function
 // ============================================================
 
 export const generateSlides = async (
-  _projectId: string,
+  projectId: string,
   userPrompt: string,
   chatHistory: ChatMessage[] = [],
   currentSlides?: string | null,
-  files?: LocalFile[]
+  files?: LocalFile[],
+  conversationSummary: string = ''
 ): Promise<GenerateSlidesResponse> => {
   const config = await loadConfig();
   const model = config.model || getDefaultModel(config.provider);
+  const useProviderManagedFileHandling =
+    config.provider === 'gemini' ||
+    (config.provider === 'openai' && isNativeOpenAIBaseUrl(config.baseUrl));
 
   if (!config.apiKey) {
-    throw new Error('No API key configured. Please set your API key in Settings.');
-  }
-
-  if (!config.baseUrl) {
-    throw new Error('No base URL configured. Please set your API endpoint in Settings.');
+    throw new Error('NO_API_KEY');
   }
 
   // Build file context
-  let fileContext = '';
+  const textContents: string[] = [];
   const fileAttachments: Array<{ data: string; mimeType: string }> = [];
+  const imageFiles: Array<{ name: string; mimeType: string }> = [];
 
   if (files && files.length > 0) {
-    const textContents: string[] = [];
-
     for (const file of files) {
       const mime = file.mimeType;
       const base64Data = file.dataUrl.split(',')[1];
 
-      if (mime.startsWith('text/') || mime === 'application/json' || file.name.endsWith('.csv')) {
+      if (mime.startsWith('image/')) {
+        // Always track image files so the AI can reference them by URL in slides
+        imageFiles.push({ name: file.name, mimeType: mime });
+        // Also send as visual attachment for AI context (non-provider-managed only)
+        if (!useProviderManagedFileHandling) {
+          fileAttachments.push({ data: base64Data, mimeType: mime });
+        }
+      } else if (!useProviderManagedFileHandling && (mime.startsWith('text/') || mime === 'application/json' || file.name.endsWith('.csv'))) {
         const text = atob(base64Data);
         textContents.push(`--- File: ${file.name} ---\n${text}`);
-      } else if (mime === 'application/pdf' || mime.startsWith('image/')) {
+      } else if (!useProviderManagedFileHandling && mime === 'application/pdf') {
         fileAttachments.push({ data: base64Data, mimeType: mime });
       }
-    }
-
-    if (textContents.length > 0) {
-      fileContext = `\n\nContext files:\n${textContents.join('\n\n')}`;
     }
   }
 
   // Build messages array
   const messages: Array<{ role: string; content: string; files?: Array<{ data: string; mimeType: string }> }> = [];
+  const referenceMessage = buildReferenceMessage(projectId, textContents,
+    useProviderManagedFileHandling ? [] : fileAttachments, imageFiles);
 
-  // Add file attachments as first user message
-  if (fileAttachments.length > 0) {
+  if (referenceMessage) {
+    messages.push(referenceMessage);
+  }
+
+  if (conversationSummary.trim()) {
     messages.push({
       role: 'user',
-      content: 'Here are the uploaded reference files. Use their content to create the presentation:',
-      files: fileAttachments,
-    });
-    messages.push({
-      role: 'model',
-      content: 'I have received and reviewed all uploaded files. I will use their content for the presentation. Please provide your instructions.',
+      content: `[Conversation summary from earlier turns]\n${conversationSummary.trim()}`,
     });
   }
 
-  // Chat history (last 4 messages, with full HTML replaced by placeholder)
+  // Keep only the latest two turns verbatim; older continuity should come from the summary.
   if (chatHistory && Array.isArray(chatHistory)) {
     const recentHistory = chatHistory.slice(-4);
     recentHistory.forEach(msg => {
-      let text = msg.content;
-      if (msg.role === 'assistant' && /<!doctype\s+html/i.test(text)) {
-        text = '[Generated presentation HTML — see current version below]';
-      }
       messages.push({
         role: msg.role === 'assistant' ? 'model' : msg.role,
-        content: text,
+        content: normalizeHistoryMessage(msg),
       });
     });
   }
 
-  // Current user prompt with slides context
+  if (currentSlides) {
+    messages.push({
+      role: 'user',
+      content: `[Current slide HTML — base your edits on this version and preserve the existing structure unless the user asks to regenerate]\n${currentSlides}`,
+    });
+  }
+
   if (userPrompt) {
-    let promptText = userPrompt;
-
-    if (currentSlides) {
-      const alreadyInHistory = messages.some(
-        c => c.role === 'model' && c.content === currentSlides
-      );
-      if (!alreadyInHistory) {
-        promptText += `\n\n[Current slide HTML — base your edits on this version:]\n${currentSlides}`;
-      }
-    }
-
-    messages.push({ role: 'user', content: promptText });
+    messages.push({
+      role: 'user',
+      content: `[Current task]\n${userPrompt}`,
+    });
   }
 
   // Call server proxy
@@ -463,11 +511,13 @@ export const generateSlides = async (
     body: JSON.stringify({
       provider: config.provider,
       model,
+      projectId,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      system: SYSTEM_INSTRUCTION + fileContext,
+      system: SYSTEM_INSTRUCTION,
       messages,
       temperature: 0.7,
+      files: files || [],
     }),
   });
 
@@ -477,20 +527,34 @@ export const generateSlides = async (
   }
 
   const data = await response.json();
-  let generatedText: string = data.text || 'No content generated';
+  const rawText: string = data.text || 'No content generated';
+
+  // Extract the chat-visible text (everything outside code blocks)
+  // This shows the AI's reasoning/thinking to the user
+  let chatText = rawText
+    .replace(/```[\w]*[\s\S]*?```/g, '')
+    .trim();
+  if (!chatText) {
+    chatText = '';
+  }
+  // Append indicator that HTML is rendered in the editor
+  chatText += '\n\n📄 [Displayed in the editor]';
+
+  // Extract HTML content for the editor
+  let generatedHtml = rawText;
 
   // Apply diffs if response contains diff blocks
-  const diffMatch = generatedText.match(/```diff([\s\S]*?)```/);
+  const diffMatch = rawText.match(/```diff([\s\S]*?)```/);
   if (diffMatch && currentSlides) {
-    generatedText = applyDiffs(diffMatch[1], currentSlides);
+    generatedHtml = applyDiffs(diffMatch[1], currentSlides);
   } else if (diffMatch && !currentSlides) {
     console.warn('Diff response but no currentSlides provided, returning raw response');
   }
 
   // Extract HTML from code block if present
-  const htmlMatch = generatedText.match(/```html([\s\S]*?)```/);
+  const htmlMatch = rawText.match(/```html([\s\S]*?)```/);
   if (htmlMatch) {
-    generatedText = htmlMatch[1].trim();
+    generatedHtml = htmlMatch[1].trim();
   }
 
   // Compute usage and pricing
@@ -498,16 +562,19 @@ export const generateSlides = async (
   const inputTokens = usage.inputTokens || 0;
   const outputTokens = usage.outputTokens || 0;
   const cachedTokens = usage.cachedTokens || 0;
+  const thinkingTokens = usage.thinkingTokens || 0;
   const totalTokens = inputTokens + outputTokens;
 
   return {
-    content: generatedText,
+    content: generatedHtml,
+    chatText,
     usage: {
       inputTokens,
       outputTokens,
       cachedTokens,
+      thinkingTokens,
       totalTokens,
-      estimatedPrice: computePrice(config.provider, model, inputTokens, outputTokens, cachedTokens),
+      estimatedPrice: computePrice(config.provider, model, inputTokens, outputTokens, cachedTokens, thinkingTokens),
     },
   };
 };

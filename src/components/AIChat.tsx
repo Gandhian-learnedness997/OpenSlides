@@ -85,11 +85,11 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
         const response: any = await onGenerate(userMessage, includeSlides);
 
         // Handle both string response (old behavior) and object response (new behavior with usage)
-        let content: string = response;
+        let displayText: string = response;
         let usage = null;
 
-        if (typeof response === 'object' && response.content) {
-            content = response.content;
+        if (typeof response === 'object') {
+            displayText = response.chatText || response.content || response;
             usage = response.usage;
         }
 
@@ -97,16 +97,20 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
           ...prev,
           {
             role: "assistant",
-            content: content,
+            content: displayText,
             usage: usage
           } as ChatMessage,
         ]);
-      } catch (error) {
+      } catch (error: any) {
+        const errorMap: Record<string, string> = {
+          'NO_API_KEY': t('aiChat.noApiKey'),
+        };
+        const msg = errorMap[error?.message] || error?.message || t('aiChat.genericError');
         setChatHistory((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: "Sorry, something went wrong while generating the slides.",
+            content: msg,
             isError: true,
           },
         ]);
@@ -184,14 +188,13 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
               }`}
             >
               {renderMessageContent(msg.content)}
-              {msg.usage && (msg.usage.estimatedPrice || msg.usage.inputTokens) && (
-                <div className="mt-2 pt-2 border-t border-gray-700/50 text-[10px] text-gray-500 flex items-center justify-between gap-3">
-                  <span className="flex gap-2">
-                    <span>In: {(msg.usage.inputTokens || 0).toLocaleString()}</span>
-                    {msg.usage.cachedTokens > 0 && <span className="text-green-500">(cached: {msg.usage.cachedTokens.toLocaleString()})</span>}
-                    <span>Out: {(msg.usage.outputTokens || 0).toLocaleString()}</span>
-                  </span>
-                  <span className="font-medium text-gray-400">${parseFloat(msg.usage.estimatedPrice || '0').toFixed(4)}</span>
+              {msg.usage && msg.usage.inputTokens > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-700/50 text-[10px] text-gray-500 flex gap-2">
+                  <span>In: {(msg.usage.inputTokens || 0).toLocaleString()}</span>
+                  {msg.usage.cachedTokens > 0 && <span className="text-green-500">(cached: {msg.usage.cachedTokens.toLocaleString()})</span>}
+                  <span>Out: {(msg.usage.outputTokens || 0).toLocaleString()}</span>
+                  {msg.usage.thinkingTokens > 0 && <span className="text-purple-400">(thinking: {msg.usage.thinkingTokens.toLocaleString()})</span>}
+                  {msg.usage.estimatedPrice && <span className="text-yellow-500">${msg.usage.estimatedPrice}</span>}
                 </div>
               )}
             </div>
@@ -240,12 +243,12 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
             >
               <div className={`absolute top-[2px] w-3 h-3 rounded-full bg-white transition-all ${includeSlides ? 'left-[14px]' : 'left-[2px]'}`} />
             </button>
-            <span className="text-xs text-gray-400 select-none">Include current slides as context</span>
+            <span className="text-xs text-gray-400 select-none">{t('aiChat.includeSlides')}</span>
             <div className="relative group">
               <Info size={14} className="text-gray-500 cursor-help" />
               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-10">
-                <p><span className="text-green-400 font-medium">ON:</span> AI sees current slides and modifies based on them</p>
-                <p className="mt-1"><span className="text-rose-400 font-medium">OFF:</span> AI follows the conversation history but ignores the current slides on screen</p>
+                <p><span className="text-green-400 font-medium">ON:</span> {t('aiChat.includeSlidesOn')}</p>
+                <p className="mt-1"><span className="text-rose-400 font-medium">OFF:</span> {t('aiChat.includeSlidesOff')}</p>
               </div>
             </div>
           </div>

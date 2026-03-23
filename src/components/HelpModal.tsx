@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, BookOpen, FileText, MessageSquare, Edit, Download } from 'lucide-react';
+import { X, BookOpen, Settings, FileText, MessageSquare, Edit, History } from 'lucide-react';
 import { useLanguage } from '../hooks/useLanguage';
 
 interface HelpModalProps {
@@ -11,24 +11,29 @@ export default function HelpModal({ onClose }: HelpModalProps) {
 
   const steps: Array<{ icon: React.ReactNode; title: string; description: string }> = [
     {
-      icon: <FileText className="text-blue-400" size={24} />,
+      icon: <Settings className="text-cyan-400" size={24} />,
       title: t('help.step1Title'),
       description: t('help.step1Desc')
     },
     {
-      icon: <MessageSquare className="text-green-400" size={24} />,
+      icon: <FileText className="text-blue-400" size={24} />,
       title: t('help.step2Title'),
       description: t('help.step2Desc')
     },
     {
-      icon: <Edit className="text-purple-400" size={24} />,
+      icon: <MessageSquare className="text-green-400" size={24} />,
       title: t('help.step3Title'),
       description: t('help.step3Desc')
     },
     {
-      icon: <Download className="text-orange-400" size={24} />,
+      icon: <Edit className="text-purple-400" size={24} />,
       title: t('help.step4Title'),
       description: t('help.step4Desc')
+    },
+    {
+      icon: <History className="text-orange-400" size={24} />,
+      title: t('help.step5Title'),
+      description: t('help.step5Desc')
     }
   ];
 
@@ -70,14 +75,14 @@ export default function HelpModal({ onClose }: HelpModalProps) {
             ))}
           </div>
 
-          {/* <div className="mt-8 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+          <div className="mt-6 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
             <h4 className="text-blue-400 font-medium mb-2 flex items-center gap-2">
               {t('help.proTipTitle')}
             </h4>
-            <p className="text-sm text-gray-300">
+            <p className="text-sm text-gray-300 leading-relaxed">
               {t('help.proTipDesc')}
             </p>
-          </div> */}
+          </div>
         </div>
 
         {/* Footer */}

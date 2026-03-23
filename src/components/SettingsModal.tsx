@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, Check, AlertCircle, Key, Cpu, ExternalLink, Eye, EyeOff, Globe } from "lucide-react";
+import { X, Check, AlertCircle, Key, Cpu, Eye, EyeOff, Globe } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
 import { AIProvider } from "@/types";
 
@@ -8,10 +8,10 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_OPTIONS: { value: AIProvider; label: string; defaultModel: string; description: string }[] = [
-  { value: 'gemini', label: 'Gemini', defaultModel: 'gemini-3.1-pro-preview', description: 'Auto caching (repeat prefix)' },
-  { value: 'claude', label: 'Claude', defaultModel: 'claude-sonnet-4.6', description: 'Manual cache_control (ephemeral)' },
-  { value: 'gpt', label: 'GPT', defaultModel: 'gpt-5.4', description: 'Auto caching (1024+ token prefix)' },
+const PROVIDER_OPTIONS: { value: AIProvider; label: string; defaultModel: string; defaultBaseUrl: string; descKey: string }[] = [
+  { value: 'gemini', label: 'Gemini', defaultModel: 'gemini-3.1-pro-preview', defaultBaseUrl: 'https://generativelanguage.googleapis.com', descKey: 'settings.descGemini' },
+  { value: 'claude', label: 'Claude', defaultModel: 'claude-sonnet-4.6', defaultBaseUrl: 'https://api.anthropic.com', descKey: 'settings.descClaude' },
+  { value: 'openai', label: 'OpenAI', defaultModel: 'gpt-5.4', defaultBaseUrl: 'https://api.openai.com/v1', descKey: 'settings.descOpenai' },
 ];
 
 export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
@@ -35,11 +35,10 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           setBaseUrl(data.baseUrl || '');
         })
         .catch(() => {
-          // Fallback defaults
           setProvider('gemini');
           setApiKey('');
           setModelName('');
-          setBaseUrl('https://aihubmix.com');
+          setBaseUrl('');
         });
     }
   }, [isOpen]);
@@ -50,8 +49,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const handleProviderChange = (newProvider: AIProvider) => {
     setProvider(newProvider);
-    // Clear model when switching providers so default is used
     setModelName("");
+    setBaseUrl("");
   };
 
   const handleSave = async () => {
@@ -96,7 +95,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           {/* Provider Selection */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-              <Cpu size={14} /> Provider
+              <Cpu size={14} /> {t('settings.provider')}
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {PROVIDER_OPTIONS.map(opt => (
@@ -114,36 +113,36 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               ))}
             </div>
             <p className="text-xs text-gray-500">
-              {selectedProvider.description}
+              {t(selectedProvider.descKey as any)}
             </p>
           </section>
 
           {/* API Configuration */}
           <section className="space-y-4">
             <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-              <Key size={14} /> API Configuration
+              <Key size={14} /> {t('settings.apiConfiguration')}
             </h3>
 
             {/* Base URL */}
             <div className="space-y-2">
               <label className="block text-sm text-gray-300 flex items-center gap-2">
-                <Globe size={14} /> Base URL
+                <Globe size={14} /> {t('settings.baseUrl')}
               </label>
               <input
                 type="text"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder="https://your-api-proxy.com"
+                placeholder={selectedProvider.defaultBaseUrl}
               />
               <p className="text-xs text-gray-500">
-                API proxy endpoint (e.g. https://aihubmix.com)
+                {t('settings.modelNameHint')} {selectedProvider.defaultBaseUrl}
               </p>
             </div>
 
             {/* API Key */}
             <div className="space-y-2">
-              <label className="block text-sm text-gray-300">API Key</label>
+              <label className="block text-sm text-gray-300">{t('settings.apiKey')}</label>
               <div className="relative">
                 <input
                   type={showApiKey ? "text" : "password"}
@@ -160,20 +159,12 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   {showApiKey ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
-              <a
-                href="https://aihubmix.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-              >
-                Get an API key from AiHubMix <ExternalLink size={10} />
-              </a>
             </div>
 
             {/* Model Name */}
             <div className="space-y-2">
               <label className="block text-sm text-gray-300 flex items-center gap-2">
-                <Cpu size={14} /> Model Name
+                <Cpu size={14} /> {t('settings.modelName')}
               </label>
               <input
                 type="text"
@@ -183,7 +174,7 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 placeholder={selectedProvider.defaultModel}
               />
               <p className="text-xs text-gray-500">
-                Leave empty to use default: {selectedProvider.defaultModel}
+                {t('settings.modelNameHint')} {selectedProvider.defaultModel}
               </p>
             </div>
           </section>
@@ -200,24 +191,24 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
           {saveStatus === 'success' && (
             <p className="text-green-500 text-sm flex items-center gap-1 justify-center">
-              <Check size={14}/> Settings saved successfully
+              <Check size={14}/> {t('settings.savedSuccess')}
             </p>
           )}
           {saveStatus === 'error' && (
             <p className="text-red-500 text-sm flex items-center gap-1 justify-center">
-              <AlertCircle size={14}/> Failed to save settings
+              <AlertCircle size={14}/> {t('settings.savedError')}
             </p>
           )}
 
           {/* Caching Info */}
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-2">
-            <p className="text-xs text-blue-300 font-medium">Prompt Caching</p>
+            <p className="text-xs text-blue-300 font-medium">{t('settings.promptCaching')}</p>
             <p className="text-xs text-blue-300/80 leading-relaxed">
               {provider === 'claude'
-                ? 'Claude uses explicit cache_control annotations. The system prompt is automatically cached with ephemeral TTL (5 min). Cache reads cost 0.1x input price.'
+                ? t('settings.cachingClaude')
                 : provider === 'gemini'
-                ? 'Gemini caches automatically when the same prefix is repeated. Cached tokens cost 25% of standard input price.'
-                : 'GPT caches automatically for prompts with 1024+ token prefixes. Cache reads cost 0.25-0.5x the original price.'
+                ? t('settings.cachingGemini')
+                : t('settings.cachingOpenai')
               }
             </p>
           </div>

@@ -109,7 +109,7 @@ export default function Navbar({
             <div className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-colors">
               <span className="text-xs font-bold">?</span>
             </div>
-            <span className="text-sm font-medium text-gray-400 group-hover:text-gray-200">{t('help.howToUse')}</span>
+            <span className="text-sm font-medium text-gray-400 group-hover:text-gray-200 w-20 text-center">{t('help.howToUse')}</span>
           </button>
         </div>
 

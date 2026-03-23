@@ -1,0 +1,35 @@
+{
+  "name": "openslides",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n vite,server -c cyan,yellow \"vite\" \"node --watch server.js\"",
+    "server": "node --watch server.js",
+    "build": "vite build",
+    "start": "vite build && node server.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lucide-react": "^0.555.0",
+    "nanoid": "^5.1.7",
+    "prismjs": "^1.30.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "reveal.js": "^5.2.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/prismjs": "^1.26.6",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "autoprefixer": "^10.4.22",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}

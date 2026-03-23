@@ -1,0 +1,513 @@
+import { AIProvider, AIConfig, ChatMessage, GenerateSlidesResponse, LocalFile } from '@/types';
+
+const SYSTEM_INSTRUCTION = `
+You are a world-class presentation designer using reveal.js. Create stunning, complete HTML presentations.
+
+═══════════════════════════════════════════
+STEP 1 — DESIGN THINKING (before any HTML)
+═══════════════════════════════════════════
+
+Analyze the content and choose a design that genuinely matches the subject:
+
+COLOR PALETTE — Pick 3-5 colors. Consider the topic, mood, and audience. Example palettes for inspiration:
+- Classic Blue: #1C2833, #2E4053, #AAB7B8, #F4F6F6
+- Teal & Coral: #5EA8A7, #277884, #FE4447, #FFFFFF
+- Deep Purple & Emerald: #B165FB, #181B24, #40695B, #FFFFFF
+- Charcoal & Red: #292929, #E33737, #CCCBCB
+- Forest Green: #191A19, #4E9F3D, #1E5128, #FFFFFF
+- Black & Gold: #BF9A4A, #000000, #F4F6F6
+- Vibrant Orange: #F96D00, #F2F2F2, #222831
+Don't default to blue. Match the palette to the content.
+
+FONTS — Use Google Fonts. Choose based on tone:
+- Clean/modern: "Inter", "Lato", "Source Sans Pro"
+- Elegant/formal: "Playfair Display", "Merriweather"
+- Techy/geometric: "Space Grotesk", "JetBrains Mono"
+- Always pair a heading font with a body font.
+
+VISUAL VARIETY — Plan diverse layouts across slides:
+- Title/divider slides (centered, large text)
+- Content slides with grids or columns
+- Feature cards, stat boxes, icon grids
+- Quote slides, comparison layouts
+- Don't repeat the same layout on consecutive slides.
+
+═══════════════════════════════════════════
+STEP 2 — OUTPUT FORMAT (CRITICAL)
+═══════════════════════════════════════════
+
+Output a COMPLETE standalone HTML file inside a single \`\`\`html code block.
+The file must be fully self-contained and viewable by opening in any browser.
+
+Structure:
+\`\`\`html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>[Presentation Title]</title>
+  <!-- Reveal.js core -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <!-- Google Fonts (customize per presentation) -->
+  <link href="https://fonts.googleapis.com/css2?family=...&display=swap" rel="stylesheet">
+  <!-- Font Awesome 6 for icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    /* === ALL CSS HERE === */
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+      <!-- <section> slides here -->
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"><\/script>
+  <script>
+    Reveal.initialize({
+      width: 1280, height: 720, margin: 0,
+      controls: true, progress: true, hash: true,
+      transition: 'slide', center: false
+    });
+  <\/script>
+</body>
+</html>
+\`\`\`
+
+═══════════════════════════════════════════
+STEP 3 — CSS STYLING
+═══════════════════════════════════════════
+
+All CSS goes in a single <style> tag in the <head>. Structure it as:
+
+1. CSS VARIABLES — Define theme colors, fonts, and sizes:
+:root {
+  --background-color: #...;       /* Main slide background */
+  --primary-color: #...;          /* Main accent */
+  --secondary-color: #...;        /* Secondary accent */
+  --text-color: #...;             /* Main text */
+  --muted-color: #...;            /* Secondary text */
+  --heading-font: "Font Name", sans-serif;
+  --body-font: "Font Name", sans-serif;
+}
+
+2. BASE OVERRIDES — Override reveal.js defaults:
+.reveal { font-family: var(--body-font); }
+.reveal-viewport { background-color: var(--background-color); }
+.reveal h1, .reveal h2, .reveal h3 { font-family: var(--heading-font); text-transform: none; color: var(--text-color); font-weight: 600; }
+.reveal p, .reveal li { color: var(--text-color); line-height: 1.5; }
+
+3. SLIDE LAYOUT:
+.reveal .slides section {
+  height: 100%; display: flex !important; flex-direction: column !important;
+  padding: 40px 60px 60px 60px !important; box-sizing: border-box; text-align: left;
+}
+.reveal .slides section > .content {
+  flex: 1; display: flex; flex-direction: column; padding-top: 30px;
+}
+
+4. REUSABLE COMPONENT CLASSES — Create CSS classes for repeated visual patterns:
+- Feature cards (icon + title + description)
+- Stat boxes (number + label)
+- Workflow steps (number circle + text)
+- Section dividers (centered title slides)
+Only create classes for patterns that repeat 2+ times. Use inline styles for one-off layouts.
+
+5. FONT SIZES — ALWAYS use pt (like PowerPoint):
+- Titles: 48pt, Subtitles: 36pt, Body: 16-18pt, Captions: 12pt
+- Use larger sizes when slides have less content.
+
+═══════════════════════════════════════════
+STEP 4 — SLIDE STRUCTURE
+═══════════════════════════════════════════
+
+- Each slide is a <section> tag inside <div class="slides">.
+- Use a <div class="content"> wrapper for the main content area below the title.
+- Use inline CSS grid/flexbox for column layouts (NOT utility classes):
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 25px;">
+- Use Font Awesome 6 icons: <i class="fa-solid fa-icon-name"></i>
+- Use data-background-color on <section> for slide backgrounds if needed.
+- Keep text short and scannable. One idea per slide.
+- Ensure contrast: light text on dark, dark text on light.
+- All visible text must be inside <p>, <li>, or <h1>-<h6> elements. Never put raw text in <div> or <span>.
+- The viewport is 1280×720px. Content must NOT overflow.
+
+EXAMPLE SLIDE:
+<section>
+  <h2>Key Features</h2>
+  <div class="content">
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+      <div class="feature-card">
+        <i class="fa-solid fa-rocket"></i>
+        <p class="card-title">Fast</p>
+        <p class="card-desc">Lightning quick responses</p>
+      </div>
+      <!-- more cards -->
+    </div>
+  </div>
+</section>
+
+═══════════════════════════════════════════
+PREVENTING OVERFLOW (CRITICAL)
+═══════════════════════════════════════════
+The viewport is exactly 1280×720px with 40px top / 60px side / 60px bottom padding,
+leaving ~620px usable height and ~1160px usable width per slide.
+
+RULES TO PREVENT OVERFLOW:
+1. MAX CONTENT PER SLIDE: 5-6 bullet points OR 3-4 cards/boxes OR 1 image + 3 bullets.
+   If you have more content, SPLIT across multiple slides.
+2. IMAGE SIZING: Always constrain images with explicit max-height.
+   - Full-width image: max-height: 400px (leaves room for title)
+   - Image in 2-column layout: max-height: 350px
+   - Always use object-fit: contain or cover with overflow: hidden on the container.
+   Example: <img src="..." style="width: 100%; max-height: 400px; object-fit: contain;" />
+3. TEXT IN CARDS/BOXES: Limit to 2-3 short lines per card. Use font-size 14-16pt for card body text.
+4. USE overflow: hidden ON CONTAINERS: Add overflow: hidden to any grid cell or card container
+   so content is clipped rather than breaking the layout.
+5. WHEN IN DOUBT, USE FEWER ITEMS AND LARGER TEXT rather than cramming everything in.
+
+═══════════════════════════════════════════
+EDIT MODE (when modifying existing slides)
+═══════════════════════════════════════════
+When the user asks to MODIFY existing slides (fix overflow, change colors, edit text, etc.),
+DO NOT output the entire HTML again. Instead, output ONLY the changes using search/replace blocks:
+
+\`\`\`diff
+<<<SEARCH
+exact text from the current HTML to find
+===
+replacement text
+>>>REPLACE
+\`\`\`
+
+RULES FOR EDIT MODE:
+- Use edit mode when: the conversation already contains a previous presentation AND the user
+  asks to modify/fix/change/update/tweak specific aspects of it.
+- Use FULL HTML mode when: creating a new presentation from scratch, or the user explicitly
+  asks to regenerate/redo the entire deck.
+- The SEARCH text must be an EXACT substring of the current HTML (including whitespace/indentation).
+- Include enough context in SEARCH to be unique — don't match ambiguous short strings.
+- You can have multiple <<<SEARCH...>>>REPLACE blocks in one response.
+- Each block replaces ONE occurrence. If the same change applies to multiple places,
+  use separate blocks.
+- To DELETE content, use an empty replacement (nothing between === and >>>REPLACE).
+- To ADD content, use SEARCH to find the insertion point and include the new content
+  in the replacement along with the original context.
+- Wrap all blocks in a single \`\`\`diff code fence.
+
+EXAMPLE — changing a slide title and fixing font size:
+\`\`\`diff
+<<<SEARCH
+      <h2>Old Title Here</h2>
+===
+      <h2>New Better Title</h2>
+>>>REPLACE
+
+<<<SEARCH
+  font-size: 18pt;
+  color: var(--text-color);
+===
+  font-size: 14pt;
+  color: var(--text-color);
+>>>REPLACE
+\`\`\`
+
+═══════════════════════════════════════════
+IMPORTANT RULES
+═══════════════════════════════════════════
+- For NEW presentations: Output ONE complete HTML file in a \`\`\`html code block. Nothing else before or after.
+- For EDITS to existing presentations: Output search/replace blocks in a \`\`\`diff code block.
+- CSS and HTML in one file. No external stylesheets.
+- Use flexbox/grid for layout. NEVER use absolute positioning.
+- Every slide must fit within 1280×720. Do not let content overflow.
+- Use <section> for slides, NOT <div> or any other element.
+- Include the reveal.js CDN scripts and initialization in the output (for new presentations).
+- Be creative with colors. Don't use the same palette every time.
+- If uploaded images are provided with URLs, use them in the presentation with <img> tags.
+  Use the EXACT signed URL provided. Style images with object-fit, border-radius, etc. as needed.
+  Example: <img src="[signed-url]" style="width: 100%; max-height: 400px; object-fit: contain; border-radius: 8px;" />
+`;
+
+// ============================================================
+// Config helpers
+// ============================================================
+
+// Cached settings loaded from server
+let _cachedConfig: AIConfig | null = null;
+
+export async function loadConfig(): Promise<AIConfig> {
+  try {
+    const res = await fetch('/api/settings');
+    const data = await res.json();
+    _cachedConfig = {
+      provider: data.provider || 'gemini',
+      apiKey: data.apiKey || '',
+      model: data.model || '',
+      baseUrl: data.baseUrl || '',
+    };
+  } catch {
+    _cachedConfig = { provider: 'gemini', apiKey: '', model: '', baseUrl: '' };
+  }
+  return _cachedConfig;
+}
+
+export function getConfig(): AIConfig {
+  // Return cached config if available, otherwise defaults
+  return _cachedConfig || { provider: 'gemini', apiKey: '', model: '', baseUrl: '' };
+}
+
+function getDefaultModel(provider: AIProvider): string {
+  switch (provider) {
+    case 'gemini': return 'gemini-3.1-pro-preview';
+    case 'claude': return 'claude-sonnet-4.6';
+    case 'gpt': return 'gpt-5.4';
+  }
+}
+
+// ============================================================
+// Pricing
+// ============================================================
+
+interface PricingTier {
+  input: number;    // per 1M tokens
+  cached: number;   // per 1M tokens
+  output: number;   // per 1M tokens
+}
+
+function getPricing(provider: AIProvider, model: string, inputTokens: number): PricingTier {
+  if (provider === 'gemini') {
+    const isLong = inputTokens > 200000;
+    if (model.includes('2.5-pro')) {
+      return isLong
+        ? { input: 5.0, cached: 0.625, output: 32.0 }
+        : { input: 2.5, cached: 0.3125, output: 15.0 };
+    }
+    // gemini-2.5-flash and others
+    return isLong
+      ? { input: 4.0, cached: 0.40, output: 18.0 }
+      : { input: 2.0, cached: 0.20, output: 12.0 };
+  }
+
+  if (provider === 'claude') {
+    if (model.includes('opus')) {
+      return { input: 15.0, cached: 1.5, output: 75.0 };
+    }
+    if (model.includes('haiku')) {
+      return { input: 0.80, cached: 0.08, output: 4.0 };
+    }
+    // sonnet
+    return { input: 3.0, cached: 0.30, output: 15.0 };
+  }
+
+  // GPT
+  if (model.includes('gpt-4o-mini')) {
+    return { input: 0.15, cached: 0.075, output: 0.60 };
+  }
+  if (model.includes('gpt-4o')) {
+    return { input: 2.50, cached: 1.25, output: 10.0 };
+  }
+  if (model.includes('o3') || model.includes('o1')) {
+    return { input: 10.0, cached: 2.50, output: 40.0 };
+  }
+  // Default
+  return { input: 2.0, cached: 0.50, output: 8.0 };
+}
+
+function computePrice(
+  provider: AIProvider,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cachedTokens: number,
+): string {
+  const pricing = getPricing(provider, model, inputTokens);
+  const uncachedInput = Math.max(0, inputTokens - cachedTokens);
+  const price =
+    (uncachedInput / 1_000_000) * pricing.input +
+    (cachedTokens / 1_000_000) * pricing.cached +
+    (outputTokens / 1_000_000) * pricing.output;
+  return price.toFixed(6);
+}
+
+// ============================================================
+// Diff application
+// ============================================================
+
+function applyDiffs(diffContent: string, currentHtml: string): string {
+  const blocks = diffContent.split('<<<SEARCH').slice(1);
+  let result = currentHtml;
+  let appliedCount = 0;
+  let failedCount = 0;
+
+  for (const block of blocks) {
+    const parts = block.split('===');
+    if (parts.length < 2) continue;
+    const searchText = parts[0].replace(/^\n/, '').replace(/\n$/, '');
+    const replaceAndRest = parts.slice(1).join('===');
+    const replaceMatch = replaceAndRest.split('>>>REPLACE');
+    if (replaceMatch.length < 1) continue;
+    const replaceText = replaceMatch[0].replace(/^\n/, '').replace(/\n$/, '');
+
+    if (result.includes(searchText)) {
+      result = result.replace(searchText, replaceText);
+      appliedCount++;
+    } else {
+      console.warn(`Diff block failed to match: "${searchText.substring(0, 80)}..."`);
+      failedCount++;
+    }
+  }
+
+  console.log(`Applied ${appliedCount} diff blocks, ${failedCount} failed`);
+  return result;
+}
+
+// ============================================================
+// Main generation function
+// ============================================================
+
+export const generateSlides = async (
+  _projectId: string,
+  userPrompt: string,
+  chatHistory: ChatMessage[] = [],
+  currentSlides?: string | null,
+  files?: LocalFile[]
+): Promise<GenerateSlidesResponse> => {
+  const config = await loadConfig();
+  const model = config.model || getDefaultModel(config.provider);
+
+  if (!config.apiKey) {
+    throw new Error('No API key configured. Please set your API key in Settings.');
+  }
+
+  if (!config.baseUrl) {
+    throw new Error('No base URL configured. Please set your API endpoint in Settings.');
+  }
+
+  // Build file context
+  let fileContext = '';
+  const fileAttachments: Array<{ data: string; mimeType: string }> = [];
+
+  if (files && files.length > 0) {
+    const textContents: string[] = [];
+
+    for (const file of files) {
+      const mime = file.mimeType;
+      const base64Data = file.dataUrl.split(',')[1];
+
+      if (mime.startsWith('text/') || mime === 'application/json' || file.name.endsWith('.csv')) {
+        const text = atob(base64Data);
+        textContents.push(`--- File: ${file.name} ---\n${text}`);
+      } else if (mime === 'application/pdf' || mime.startsWith('image/')) {
+        fileAttachments.push({ data: base64Data, mimeType: mime });
+      }
+    }
+
+    if (textContents.length > 0) {
+      fileContext = `\n\nContext files:\n${textContents.join('\n\n')}`;
+    }
+  }
+
+  // Build messages array
+  const messages: Array<{ role: string; content: string; files?: Array<{ data: string; mimeType: string }> }> = [];
+
+  // Add file attachments as first user message
+  if (fileAttachments.length > 0) {
+    messages.push({
+      role: 'user',
+      content: 'Here are the uploaded reference files. Use their content to create the presentation:',
+      files: fileAttachments,
+    });
+    messages.push({
+      role: 'model',
+      content: 'I have received and reviewed all uploaded files. I will use their content for the presentation. Please provide your instructions.',
+    });
+  }
+
+  // Chat history (last 4 messages, with full HTML replaced by placeholder)
+  if (chatHistory && Array.isArray(chatHistory)) {
+    const recentHistory = chatHistory.slice(-4);
+    recentHistory.forEach(msg => {
+      let text = msg.content;
+      if (msg.role === 'assistant' && /<!doctype\s+html/i.test(text)) {
+        text = '[Generated presentation HTML — see current version below]';
+      }
+      messages.push({
+        role: msg.role === 'assistant' ? 'model' : msg.role,
+        content: text,
+      });
+    });
+  }
+
+  // Current user prompt with slides context
+  if (userPrompt) {
+    let promptText = userPrompt;
+
+    if (currentSlides) {
+      const alreadyInHistory = messages.some(
+        c => c.role === 'model' && c.content === currentSlides
+      );
+      if (!alreadyInHistory) {
+        promptText += `\n\n[Current slide HTML — base your edits on this version:]\n${currentSlides}`;
+      }
+    }
+
+    messages.push({ role: 'user', content: promptText });
+  }
+
+  // Call server proxy
+  const response = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: config.provider,
+      model,
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      system: SYSTEM_INSTRUCTION + fileContext,
+      messages,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: 'Request failed' }));
+    throw new Error(err.error || `Server error ${response.status}`);
+  }
+
+  const data = await response.json();
+  let generatedText: string = data.text || 'No content generated';
+
+  // Apply diffs if response contains diff blocks
+  const diffMatch = generatedText.match(/```diff([\s\S]*?)```/);
+  if (diffMatch && currentSlides) {
+    generatedText = applyDiffs(diffMatch[1], currentSlides);
+  } else if (diffMatch && !currentSlides) {
+    console.warn('Diff response but no currentSlides provided, returning raw response');
+  }
+
+  // Extract HTML from code block if present
+  const htmlMatch = generatedText.match(/```html([\s\S]*?)```/);
+  if (htmlMatch) {
+    generatedText = htmlMatch[1].trim();
+  }
+
+  // Compute usage and pricing
+  const usage = data.usage || {};
+  const inputTokens = usage.inputTokens || 0;
+  const outputTokens = usage.outputTokens || 0;
+  const cachedTokens = usage.cachedTokens || 0;
+  const totalTokens = inputTokens + outputTokens;
+
+  return {
+    content: generatedText,
+    usage: {
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      totalTokens,
+      estimatedPrice: computePrice(config.provider, model, inputTokens, outputTokens, cachedTokens),
+    },
+  };
+};

@@ -1068,10 +1068,11 @@ export default function SlidePreview({
           </button>
           <button
             onClick={handleDownload}
-            className="p-2 text-gray-400 hover:bg-gray-800 rounded-lg transition-colors"
-            title="Download HTML"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors"
+            title={t('slidePreview.download')}
           >
-            <Download size={18} />
+            <Download size={14} />
+            <span>{t('slidePreview.download')}</span>
           </button>
         </div>
       </div>

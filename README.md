@@ -6,6 +6,19 @@ It combines a React editor, an Express backend, versioned project storage, and m
 
 [中文版Readme](./README.zh-CN.md)
 
+## Table of Contents
+
+- [Why OpenSlides](#why-openslides)
+- [Highlights](#highlights)
+- [Demo](#demo)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Workflow Features](#workflow-features)
+- [Provider Notes](#provider-notes)
+- [Development Notes](#development-notes)
+- [Acknowledgements](#acknowledgements)
+
 ## Why OpenSlides
 
 OpenSlides is designed for a practical presentation workflow:
@@ -34,21 +47,13 @@ OpenSlides is designed for a practical presentation workflow:
 
 ## Demo
 
-The example below is embedded for quick browsing, with a direct link if your Markdown viewer does not render iframes.
+Use the link below to open the slides directly in the browser.
 
 The slides is built on my recent paper [PIRA-Bench](https://arxiv.org/abs/2603.08013). The sources are paper pdf, two images from the paper. It totally cost around $0.3 by using gemini-3.1-pro-preview.
 
 ### PIRA-Bench: Proactive GUI Agents
 
-[Open demo HTML](./demos/pira-bench.html)
-
-<iframe
-  src="./demos/pira-bench.html"
-  title="PIRA-Bench demo"
-  width="100%"
-  height="540"
-  style="border: 1px solid #30363d; border-radius: 12px; background: #0d1117;"
-></iframe>
+<a href="https://yuxiangchai.github.io/OpenSlides/pira-bench.html" target="_blank" rel="noopener noreferrer">Open demo in a new tab</a>
 
 ## How It Works
 

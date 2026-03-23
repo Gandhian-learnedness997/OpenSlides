@@ -424,6 +424,16 @@ export default function SlidePreview({
     arrowColor
   );
 
+  const createPresentDocument = (html: string): string | null => {
+    const docKey = `openslides_present_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    try {
+      sessionStorage.setItem(docKey, html);
+      return docKey;
+    } catch {
+      return null;
+    }
+  };
+
   // Sync slidesData → localContent
   useEffect(() => {
     if (slidesData) {
@@ -511,13 +521,12 @@ export default function SlidePreview({
     const content = normalizedContent;
     // Make image URLs absolute so they resolve from blob: context
     const html = makeImageUrlsAbsolute(buildPresentationHtml(content));
-    try {
-      sessionStorage.setItem('openslides_present_html', html);
-    } catch {
+    const docKey = createPresentDocument(html);
+    if (!docKey) {
       window.alert('Unable to prepare presentation HTML for the presentation overlay.');
       return;
     }
-    setPresentationFrameSrc(`/present?ts=${Date.now()}`);
+    setPresentationFrameSrc(`/present?docKey=${encodeURIComponent(docKey)}&ts=${Date.now()}`);
   };
 
   const handleDownload = async () => {

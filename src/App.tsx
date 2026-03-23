@@ -5,17 +5,26 @@ import ProjectDetail from "./components/ProjectDetail";
 import SettingsModal from "./components/SettingsModal";
 import { Project, CurrentView } from '@/types';
 
+function buildPresentDocument(html: string): string {
+  return html;
+}
+
 export default function App() {
   const isPresentRoute = window.location.pathname === "/present";
   const [presentHtml, setPresentHtml] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<CurrentView>("dashboard");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isRestoringProject, setIsRestoringProject] = useState(false);
 
   useEffect(() => {
     if (!isPresentRoute) return;
-    const html = sessionStorage.getItem('openslides_present_html');
-    setPresentHtml(html);
+    const params = new URLSearchParams(window.location.search);
+    const docKey = params.get('docKey') || 'openslides_present_html';
+    const html = sessionStorage.getItem(docKey);
+    if (!html) return;
+    const documentHtml = buildPresentDocument(html);
+    setPresentHtml(documentHtml);
   }, [isPresentRoute]);
 
   // Restore project from URL on mount
@@ -24,15 +33,51 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const projectId = params.get("project");
 
-    if (projectId) {
-      const projects: Project[] = JSON.parse(localStorage.getItem('openslides_projects') || '[]');
-      const project = projects.find((p) => p.id === projectId);
-      if (project) {
-        setSelectedProject(project);
-        setCurrentView("project");
-      }
+    if (!projectId) {
+      setIsRestoringProject(false);
+      return;
     }
-  }, []);
+
+    let cancelled = false;
+    setIsRestoringProject(true);
+
+    const restoreProject = async () => {
+      try {
+        const res = await fetch('/api/projects');
+        if (!res.ok) {
+          throw new Error(`Failed to load projects: ${res.status}`);
+        }
+        const projects: Project[] = await res.json();
+        const project = projects.find((p) => p.id === projectId) || null;
+
+        if (cancelled) return;
+
+        if (project) {
+          setSelectedProject(project);
+          setCurrentView("project");
+        } else {
+          setSelectedProject(null);
+          setCurrentView("dashboard");
+        }
+      } catch (error) {
+        console.error('Failed to restore project from URL:', error);
+        if (!cancelled) {
+          setSelectedProject(null);
+          setCurrentView("dashboard");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsRestoringProject(false);
+        }
+      }
+    };
+
+    restoreProject();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isPresentRoute]);
 
   useEffect(() => {
     if (!isPresentRoute || !presentHtml) return;
@@ -57,17 +102,26 @@ export default function App() {
         projectName={selectedProject?.name}
         projectId={selectedProject?.id}
         onSettingsClick={() => setIsSettingsModalOpen(true)}
-        onRename={(newName: string) => {
+        onRename={async (newName: string) => {
           if (!selectedProject) return;
-          // Update in localStorage
-          const projects: Project[] = JSON.parse(localStorage.getItem('openslides_projects') || '[]');
-          const updated = projects.map(p => p.id === selectedProject.id ? { ...p, name: newName } : p);
-          localStorage.setItem('openslides_projects', JSON.stringify(updated));
-          setSelectedProject(prev => prev ? { ...prev, name: newName } : null);
+          try {
+            const res = await fetch(`/api/projects/${selectedProject.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName }),
+            });
+            if (!res.ok) {
+              throw new Error(`Failed to rename project: ${res.status}`);
+            }
+            const updatedProject: Project = await res.json();
+            setSelectedProject(updatedProject);
+          } catch (error) {
+            console.error('Failed to rename project:', error);
+          }
         }}
       />
       <main className="flex-1 overflow-hidden">
-        {currentView === "dashboard" && (
+        {!isRestoringProject && currentView === "dashboard" && (
           <div className="max-w-5xl mx-auto p-6 h-full overflow-y-auto custom-scrollbar">
             <Dashboard
               onSelectProject={(project: Project) => {

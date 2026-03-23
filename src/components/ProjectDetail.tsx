@@ -13,6 +13,9 @@ interface ProjectDetailProps {
   onBack: () => void;
 }
 
+const MAX_MANUAL_HISTORY = 10;
+const MAX_AUTO_HISTORY = 10;
+
 export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [leftWidth, setLeftWidth] = useState(20);
   const [rightWidth, setRightWidth] = useState(25);
@@ -168,7 +171,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       const newState = await saveState(project.id, nextAutoIndex, content, historyToSave, nextContext, true);
       let newAutoStates = [...currentAutoStates, newState];
 
-      if (newAutoStates.length > 3) {
+      if (newAutoStates.length > MAX_AUTO_HISTORY) {
         const stateToRemove = newAutoStates[0];
         await deleteState(project.id, stateToRemove.path);
         newAutoStates = newAutoStates.slice(1);
@@ -200,8 +203,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     if (!content) return;
 
     let currentStates = slideInfo?.states || [];
-    if (currentStates.length >= 15) {
-      const confirmed = window.confirm("You have reached the maximum limit of 15 manual save states. Saving this new state will delete the oldest one. Do you want to proceed?");
+    if (currentStates.length >= MAX_MANUAL_HISTORY) {
+      const confirmed = window.confirm(`You have reached the maximum limit of ${MAX_MANUAL_HISTORY} manual save states. Saving this new state will delete the oldest one. Do you want to proceed?`);
       if (!confirmed) return;
       const stateToDelete = currentStates[0];
       try {
@@ -339,7 +342,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         const newState = await saveState(project.id, nextAutoIndex, slidesData, historyToSave, currentContext, true);
         let newAutoStates = [...autoStates, newState];
 
-        if (newAutoStates.length > 3) {
+        if (newAutoStates.length > MAX_AUTO_HISTORY) {
           const stateToRemove = newAutoStates[0];
           await deleteState(project.id, stateToRemove.path);
           newAutoStates = newAutoStates.slice(1);

@@ -29,6 +29,8 @@ interface VersionItemProps {
 
 type SectionTransition = 'default' | 'none' | 'fade' | 'slide' | 'convex' | 'concave' | 'zoom';
 const DEFAULT_ARROW_COLOR = '#ffffff';
+const REVEAL_VERSION = '5.1.0';
+const REVEAL_NOTES_SCRIPT = `<script src="https://cdn.jsdelivr.net/npm/reveal.js@${REVEAL_VERSION}/plugin/notes/notes.js"><\/script>`;
 
 const SECTION_TRANSITION_OPTIONS: { value: SectionTransition; label: string }[] = [
   { value: 'default', label: 'Default' },
@@ -115,6 +117,42 @@ const applyArrowColor = (content: string, color: string): string => {
   }
 
   return `${styleTag}\n${cleaned}`;
+};
+
+const ensureRevealNotesSupport = (html: string): string => {
+  let result = html;
+  const hasNotesScript = /plugin\/notes\/notes\.js/.test(result);
+  const hasRevealNotesPlugin = /plugins\s*:\s*\[[\s\S]*?RevealNotes[\s\S]*?\]/.test(result);
+
+  if (!hasNotesScript) {
+    const revealScriptPattern = /<script[^>]*src=["'][^"']*reveal\.js(?:@[^"']+)?\/dist\/reveal\.js["'][^>]*><\/script>/i;
+    if (revealScriptPattern.test(result)) {
+      result = result.replace(revealScriptPattern, (match) => `${match}\n  ${REVEAL_NOTES_SCRIPT}`);
+    } else if (result.includes('</body>')) {
+      result = result.replace('</body>', `  ${REVEAL_NOTES_SCRIPT}\n</body>`);
+    } else {
+      result = `${result}\n${REVEAL_NOTES_SCRIPT}`;
+    }
+  }
+
+  if (hasRevealNotesPlugin) {
+    return result;
+  }
+
+  if (/plugins\s*:\s*\[/.test(result)) {
+    return result.replace(/plugins\s*:\s*\[([\s\S]*?)\]/, (match, plugins) => {
+      const trimmed = plugins.trim();
+      if (!trimmed) return 'plugins: [RevealNotes]';
+      const separator = trimmed.endsWith(',') ? '' : ', ';
+      return `plugins: [${trimmed}${separator}RevealNotes]`;
+    });
+  }
+
+  if (/Reveal\.initialize\s*\(\s*\{/.test(result)) {
+    return result.replace(/Reveal\.initialize\s*\(\s*\{/, `Reveal.initialize({\n      plugins: [RevealNotes],`);
+  }
+
+  return result;
 };
 
 /**
@@ -212,7 +250,7 @@ const ASPECT_RATIO_SCRIPT = `<script data-aspect-ratio>
 
 export const buildPresentationHtml = (content: string) => {
   if (isCompleteHtml(content)) {
-    let result = content;
+    let result = ensureRevealNotesSupport(content);
     // Inject aspect ratio + scrollable styles into complete HTML
     if (result.includes('</head>')) {
       result = result.replace('</head>', ASPECT_RATIO_STYLE + '\n' + SCROLLABLE_STYLE + '\n</head>');
@@ -238,8 +276,8 @@ export const buildPresentationHtml = (content: string) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Presentation</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@${REVEAL_VERSION}/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@${REVEAL_VERSION}/dist/reveal.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -310,7 +348,8 @@ ${sectionsOnly}
       </div>
     </div>
   </div>
-  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"><\/script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@${REVEAL_VERSION}/dist/reveal.js"><\/script>
+  ${REVEAL_NOTES_SCRIPT}
   <script>
     function resizeContainer() {
       var vw = window.innerWidth;
@@ -329,7 +368,8 @@ ${sectionsOnly}
       margin: 0,
       center: false,
       hash: true,
-      transition: 'slide'
+      transition: 'slide',
+      plugins: [RevealNotes]
     });
   <\/script>
 </body>
@@ -360,7 +400,6 @@ export default function SlidePreview({
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string>("");
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
-  const [presentationFrameSrc, setPresentationFrameSrc] = useState<string | null>(null);
   const [overflowSlides, setOverflowSlides] = useState<{index: number; title: string}[]>([]);
   const { t } = useLanguage();
   const arrowColorPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -519,14 +558,20 @@ export default function SlidePreview({
 
   const handlePresent = () => {
     const content = normalizedContent;
-    // Make image URLs absolute so they resolve from blob: context
     const html = makeImageUrlsAbsolute(buildPresentationHtml(content));
     const docKey = createPresentDocument(html);
     if (!docKey) {
-      window.alert('Unable to prepare presentation HTML for the presentation overlay.');
+      window.alert('Unable to prepare presentation HTML for presenting.');
       return;
     }
-    setPresentationFrameSrc(`/present?docKey=${encodeURIComponent(docKey)}&ts=${Date.now()}`);
+
+    const presentWindow = window.open(
+      `/present?docKey=${encodeURIComponent(docKey)}&ts=${Date.now()}`,
+      '_blank'
+    );
+    if (!presentWindow) {
+      window.alert('Unable to open the presentation tab. Please allow pop-ups for this site.');
+    }
   };
 
   const handleDownload = async () => {
@@ -719,7 +764,7 @@ export default function SlidePreview({
           <button
             onClick={handlePresent}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-colors"
-            title="Present in overlay"
+            title="Open presentation in a new tab"
           >
             <Play size={14} />
             <span>{t('slidePreview.present')}</span>
@@ -902,26 +947,6 @@ export default function SlidePreview({
           </div>
         )}
       </div>
-
-      {presentationFrameSrc && (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm">
-          <iframe
-            key={presentationFrameSrc}
-            title="Presentation"
-            src={presentationFrameSrc}
-            className="w-full h-full border-0 bg-transparent"
-            allowFullScreen
-          />
-          <button
-            onClick={() => setPresentationFrameSrc(null)}
-            className="absolute top-5 right-5 z-[101] flex h-11 w-11 items-center justify-center rounded-full bg-black/20 text-white/45 transition-all hover:bg-black/45 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/60"
-            title="Close presentation"
-            aria-label="Close presentation"
-          >
-            <X size={22} />
-          </button>
-        </div>
-      )}
 
     </div>
   );

@@ -37,6 +37,25 @@ export default function HelpModal({ onClose }: HelpModalProps) {
     }
   ];
 
+  const proTips: Array<{ title: string; description: string }> = [
+    {
+      title: t('help.proTip1Title'),
+      description: t('help.proTip1Desc')
+    },
+    {
+      title: t('help.proTip2Title'),
+      description: t('help.proTip2Desc')
+    },
+    {
+      title: t('help.proTip3Title'),
+      description: t('help.proTip3Desc')
+    },
+    {
+      title: t('help.proTip4Title'),
+      description: t('help.proTip4Desc')
+    }
+  ];
+
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-panel w-full max-w-2xl rounded-2xl border border-border shadow-2xl flex flex-col max-h-[90vh]">
@@ -76,12 +95,19 @@ export default function HelpModal({ onClose }: HelpModalProps) {
           </div>
 
           <div className="mt-6 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
-            <h4 className="text-blue-400 font-medium mb-2 flex items-center gap-2">
+            <h4 className="text-blue-400 font-medium mb-3 flex items-center gap-2">
               {t('help.proTipTitle')}
             </h4>
-            <p className="text-sm text-gray-300 leading-relaxed">
-              {t('help.proTipDesc')}
-            </p>
+            <div className="space-y-3">
+              {proTips.map((tip, index) => (
+                <div key={index} className="rounded-lg border border-blue-500/10 bg-black/10 px-3 py-3">
+                  <h5 className="text-sm font-medium text-white mb-1">{tip.title}</h5>
+                  <p className="text-sm text-gray-300 leading-relaxed">
+                    {tip.description}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 

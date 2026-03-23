@@ -65,11 +65,13 @@ Structure:
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"><\/script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"><\/script>
   <script>
     Reveal.initialize({
       width: 1280, height: 720, margin: 0,
       controls: true, progress: true, hash: true,
-      transition: 'slide', center: false
+      transition: 'slide', center: false,
+      plugins: [RevealNotes]
     });
   <\/script>
 </body>
@@ -129,6 +131,7 @@ STEP 4 — SLIDE STRUCTURE
   <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 25px;">
 - Use Font Awesome 6 icons: <i class="fa-solid fa-icon-name"></i>
 - Use data-background-color on <section> for slide backgrounds if needed.
+- Speaker notes are allowed. Use <aside class="notes">...</aside> inside a <section> when presenter notes are useful.
 - Keep text short and scannable. One idea per slide.
 - Ensure contrast: light text on dark, dark text on light.
 - All visible text must be inside <p>, <li>, or <h1>-<h6> elements. Never put raw text in <div> or <span>.

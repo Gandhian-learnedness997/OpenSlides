@@ -31,11 +31,19 @@ export interface ChatUsage {
   estimatedPrice: string;
 }
 
+export interface ChatAttachment {
+  name: string;
+  dataUrl: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   isError?: boolean;
   usage?: ChatUsage;
+  attachments?: ChatAttachment[];
 }
 
 export interface GenerateSlidesResponse {

@@ -135,7 +135,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     return filtered;
   };
 
-  const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true) => {
+  const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true, inlineAttachments?: import("@/types").ChatAttachment[]) => {
     setIsGenerating(true);
     try {
       const rawHistory = chatHistoryRef.current || [];
@@ -148,7 +148,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         filteredHistory,
         currentSlidesForApi,
         uploadedFiles,
-        conversationSummary
+        conversationSummary,
+        inlineAttachments
       );
       const { content, chatText, usage } = responseData;
       setSlidesData(content);

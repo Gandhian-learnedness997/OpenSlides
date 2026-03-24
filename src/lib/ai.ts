@@ -437,7 +437,8 @@ export const generateSlides = async (
   chatHistory: ChatMessage[] = [],
   currentSlides?: string | null,
   files?: LocalFile[],
-  conversationSummary: string = ''
+  conversationSummary: string = '',
+  inlineAttachments?: import("@/types").ChatAttachment[]
 ): Promise<GenerateSlidesResponse> => {
   const config = await loadConfig();
   const model = config.model || getDefaultModel(config.provider);
@@ -509,10 +510,20 @@ export const generateSlides = async (
     });
   }
 
-  if (userPrompt) {
+  if (userPrompt || (inlineAttachments && inlineAttachments.length > 0)) {
+    const inlineFiles: Array<{ data: string; mimeType: string }> = [];
+    if (inlineAttachments && inlineAttachments.length > 0) {
+      for (const att of inlineAttachments) {
+        const base64Data = att.dataUrl.split(',')[1];
+        if (base64Data) {
+          inlineFiles.push({ data: base64Data, mimeType: att.mimeType });
+        }
+      }
+    }
     messages.push({
       role: 'user',
-      content: `[Current task]\n${userPrompt}`,
+      content: userPrompt ? `[Current task]\n${userPrompt}` : '[See attached image(s)]',
+      ...(inlineFiles.length > 0 ? { files: inlineFiles } : {}),
     });
   }
 

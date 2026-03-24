@@ -1,10 +1,10 @@
-import React, { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Plus, Info } from "lucide-react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Bot, User, Plus, Info, X, Paperclip, Image as ImageIcon, FileText } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
-import { ChatMessage } from "@/types";
+import { ChatMessage, ChatAttachment } from "@/types";
 
 interface AIChatProps {
-  onGenerate: (prompt: string, includeSlides: boolean) => Promise<any>;
+  onGenerate: (prompt: string, includeSlides: boolean, attachments?: ChatAttachment[]) => Promise<any>;
   isGenerating: boolean;
   chatHistoryRef: React.MutableRefObject<ChatMessage[]>;
   loadedHistory: ChatMessage[] | null;
@@ -15,8 +15,41 @@ interface AIChatProps {
 export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat }: AIChatProps) {
   const [message, setMessage] = useState<string>("");
   const [includeSlides, setIncludeSlides] = useState(true);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
+  const dropZoneRef = useRef<HTMLFormElement | null>(null);
   const { t } = useLanguage();
+
+  const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml', 'application/pdf'];
+
+  const fileToAttachment = useCallback((file: File): Promise<ChatAttachment> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve({
+          name: file.name,
+          dataUrl: reader.result as string,
+          mimeType: file.type,
+          size: file.size,
+        });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    const valid = fileArray.filter(f => ALLOWED_TYPES.includes(f.type));
+    if (valid.length === 0) return;
+    const newAttachments = await Promise.all(valid.map(fileToAttachment));
+    setAttachments(prev => [...prev, ...newAttachments]);
+  }, [fileToAttachment]);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  }, []);
 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
     {
@@ -71,18 +104,20 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim() || isGenerating) return;
+    if ((!message.trim() && attachments.length === 0) || isGenerating) return;
 
-    // Add user message
+    // Add user message with attachments
     const userMessage = message;
-    const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: userMessage }];
+    const currentAttachments = attachments.length > 0 ? [...attachments] : undefined;
+    const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: userMessage, attachments: currentAttachments }];
     setChatHistory(newHistory);
     setMessage("");
+    setAttachments([]);
 
     if (onGenerate) {
       try {
-        // Trigger generation with user prompt
-        const response: any = await onGenerate(userMessage, includeSlides);
+        // Trigger generation with user prompt and attachments
+        const response: any = await onGenerate(userMessage, includeSlides, currentAttachments);
 
         // Handle both string response (old behavior) and object response (new behavior with usage)
         let displayText: string = response;
@@ -187,6 +222,20 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
                   : "bg-panel text-gray-200 rounded-tl-none border border-border"
               }`}
             >
+              {msg.attachments && msg.attachments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {msg.attachments.map((att, i) => (
+                    att.mimeType.startsWith('image/') ? (
+                      <img key={i} src={att.dataUrl} alt={att.name} className="max-w-[120px] max-h-[80px] rounded-lg object-cover border border-white/20" />
+                    ) : (
+                      <div key={i} className="flex items-center gap-1 px-2 py-1 bg-white/10 rounded text-xs">
+                        <FileText size={12} />
+                        <span className="truncate max-w-[100px]">{att.name}</span>
+                      </div>
+                    )
+                  ))}
+                </div>
+              )}
               {renderMessageContent(msg.content)}
               {msg.usage && msg.usage.inputTokens > 0 && (
                 <div className="mt-2 pt-2 border-t border-gray-700/50 text-[10px] text-gray-500 flex gap-2">
@@ -218,9 +267,59 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
       </div>
 
       <form
+        ref={dropZoneRef}
         onSubmit={handleSend}
-        className="p-4 border-t border-border bg-panel"
+        className={`p-4 border-t border-border bg-panel relative transition-colors ${isDragOver ? 'bg-blue-500/10 border-blue-500/30' : ''}`}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }}
+        onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragOver(true); }}
+        onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); if (dropZoneRef.current && !dropZoneRef.current.contains(e.relatedTarget as Node)) setIsDragOver(false); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDragOver(false);
+          if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+        }}
       >
+        {isDragOver && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500/40 rounded-xl pointer-events-none">
+            <div className="flex items-center gap-2 text-blue-400 text-sm font-medium">
+              <ImageIcon size={20} />
+              <span>Drop image or file here</span>
+            </div>
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {attachments.map((att, i) => (
+              <div key={i} className="relative group">
+                {att.mimeType.startsWith('image/') ? (
+                  <div className="relative">
+                    <img src={att.dataUrl} alt={att.name} className="h-16 w-auto rounded-lg border border-gray-700 object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-800 border border-gray-600 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-red-600 hover:border-red-600 transition-colors"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="relative flex items-center gap-1.5 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300">
+                    <FileText size={14} />
+                    <span className="truncate max-w-[100px]">{att.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      className="ml-1 text-gray-500 hover:text-white transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           placeholder={t('aiChat.placeholder')}
           className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-4 pr-12 py-3 text-sm focus:ring-1 focus:ring-blue-500 outline-none text-white placeholder-gray-500 transition-all resize-none custom-scrollbar"
@@ -230,6 +329,23 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
             if (e.key === 'Enter' && !e.shiftKey && !isGenerating) {
               e.preventDefault();
               handleSend(e);
+            }
+          }}
+          onPaste={(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+            const items = e.clipboardData.items;
+            const files: File[] = [];
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i];
+              if (item.kind === 'file') {
+                const file = item.getAsFile();
+                if (file && ALLOWED_TYPES.includes(file.type)) {
+                  files.push(file);
+                }
+              }
+            }
+            if (files.length > 0) {
+              e.preventDefault();
+              addFiles(files);
             }
           }}
           rows={3}
@@ -255,7 +371,7 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
           <button
             type="submit"
             className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={!message.trim() || isGenerating}
+            disabled={(!message.trim() && attachments.length === 0) || isGenerating}
           >
             <Send size={16} />
           </button>

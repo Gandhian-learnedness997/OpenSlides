@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Plus, Folder, Calendar, ArrowRight, Layout, Trash2, CheckCircle, Circle } from "lucide-react";
-import { nanoid } from "nanoid";
+
 import { useLanguage } from "../hooks/useLanguage";
 import { Project } from "@/types";
 
@@ -34,14 +34,25 @@ export default function Dashboard({ onSelectProject }: DashboardProps) {
 
   const createProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newProjectName.trim()) return;
+    const name = newProjectName.trim();
+    if (!name) return;
+
+    if (projects.some(p => p.name === name)) {
+      alert(t('dashboard.duplicateProjectName'));
+      return;
+    }
 
     try {
-      await fetch('/api/projects', {
+      const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: nanoid(), name: newProjectName.trim() }),
+        body: JSON.stringify({ id: name, name }),
       });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || 'Failed to create project');
+        return;
+      }
       setNewProjectName("");
       fetchProjects();
     } catch (error) {

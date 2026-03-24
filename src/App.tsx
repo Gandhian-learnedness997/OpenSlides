@@ -27,56 +27,51 @@ export default function App() {
     setPresentHtml(documentHtml);
   }, [isPresentRoute]);
 
-  // Restore project from URL on mount
-  useEffect(() => {
+  const navigateToUrl = async () => {
     if (isPresentRoute) return;
     const params = new URLSearchParams(window.location.search);
     const projectId = params.get("project");
 
     if (!projectId) {
+      setSelectedProject(null);
+      setCurrentView("dashboard");
       setIsRestoringProject(false);
       return;
     }
 
-    let cancelled = false;
     setIsRestoringProject(true);
+    try {
+      const res = await fetch('/api/projects');
+      if (!res.ok) throw new Error(`Failed to load projects: ${res.status}`);
+      const projects: Project[] = await res.json();
+      const project = projects.find((p) => p.id === projectId) || null;
 
-    const restoreProject = async () => {
-      try {
-        const res = await fetch('/api/projects');
-        if (!res.ok) {
-          throw new Error(`Failed to load projects: ${res.status}`);
-        }
-        const projects: Project[] = await res.json();
-        const project = projects.find((p) => p.id === projectId) || null;
-
-        if (cancelled) return;
-
-        if (project) {
-          setSelectedProject(project);
-          setCurrentView("project");
-        } else {
-          setSelectedProject(null);
-          setCurrentView("dashboard");
-        }
-      } catch (error) {
-        console.error('Failed to restore project from URL:', error);
-        if (!cancelled) {
-          setSelectedProject(null);
-          setCurrentView("dashboard");
-        }
-      } finally {
-        if (!cancelled) {
-          setIsRestoringProject(false);
-        }
+      if (project) {
+        setSelectedProject(project);
+        setCurrentView("project");
+      } else {
+        setSelectedProject(null);
+        setCurrentView("dashboard");
       }
-    };
+    } catch (error) {
+      console.error('Failed to restore project from URL:', error);
+      setSelectedProject(null);
+      setCurrentView("dashboard");
+    } finally {
+      setIsRestoringProject(false);
+    }
+  };
 
-    restoreProject();
+  // Restore project from URL on mount
+  useEffect(() => {
+    navigateToUrl();
+  }, [isPresentRoute]);
 
-    return () => {
-      cancelled = true;
-    };
+  // Handle browser back/forward
+  useEffect(() => {
+    const handlePopState = () => navigateToUrl();
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, [isPresentRoute]);
 
   useEffect(() => {

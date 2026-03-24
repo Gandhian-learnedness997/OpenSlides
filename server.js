@@ -920,19 +920,27 @@ app.get('/api/projects', (req, res) => {
 
 // Create project
 app.post('/api/projects', (req, res) => {
-  const { id, name } = req.body;
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Project name is required' });
+  }
+  const trimmedName = name.trim();
   const metaPath = path.join(PROJECTS_DIR, '_projects.json');
   const projects = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf-8')) : [];
 
+  if (projects.some(p => p.name === trimmedName)) {
+    return res.status(409).json({ error: 'A project with this name already exists' });
+  }
+
   const project = {
-    id,
-    name,
+    id: trimmedName,
+    name: trimmedName,
     created_at: new Date().toISOString(),
     last_accessed_at: new Date().toISOString(),
   };
   projects.push(project);
   fs.writeFileSync(metaPath, JSON.stringify(projects, null, 2));
-  ensureProjectDir(id);
+  ensureProjectDir(trimmedName);
   res.json(project);
 });
 

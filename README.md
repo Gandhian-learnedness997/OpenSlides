@@ -16,6 +16,7 @@ It combines a React editor, an Express backend, versioned project storage, and m
 - [Configuration](#configuration)
 - [Workflow Features](#workflow-features)
 - [Provider Notes](#provider-notes)
+- [Presentation Shortcuts](#presentation-shortcuts)
 - [Development Notes](#development-notes)
 - [Acknowledgements](#acknowledgements)
 
@@ -53,7 +54,7 @@ The slides is built on my recent paper [PIRA-Bench](https://arxiv.org/abs/2603.0
 
 ### PIRA-Bench: Proactive GUI Agents
 
-<a href="https://yuxiangchai.github.io/OpenSlides/pira-bench.html" target="_blank" rel="noopener noreferrer">Open demo in a new tab</a>
+<a href="https://yuxiangchai.github.io/OpenSlides/pira-bench.html" target="_blank" rel="noopener noreferrer">Try demo</a>
 
 ## How It Works
 
@@ -166,6 +167,22 @@ Inside the slide workspace, you can:
 - configure deck auto-play
 - open a presentation tab
 - download a standalone HTML file
+
+## Presentation Shortcuts
+
+These keyboard shortcuts are available during a reveal.js presentation:
+
+| Key | Action |
+| --- | --- |
+| `F` | Toggle fullscreen |
+| `O` / `Esc` | Toggle slide overview |
+| `S` | Open speaker notes window |
+| `Space` | Pause / resume auto-play |
+| `→` / `↓` | Next slide |
+| `←` / `↑` | Previous slide |
+| `Home` | Jump to first slide |
+| `End` | Jump to last slide |
+| `B` / `.` | Black out the screen (press again to resume) |
 
 ## Provider Notes
 

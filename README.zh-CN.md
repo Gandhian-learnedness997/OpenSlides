@@ -54,7 +54,7 @@ OpenSlides 适合这样的工作流：
 
 ### PIRA-Bench: Proactive GUI Agents
 
-<a href="https://yuxiangchai.github.io/OpenSlides/pira-bench.html" target="_blank" rel="noopener noreferrer">在新标签页中打开示例</a>
+<a href="https://yuxiangchai.github.io/OpenSlides/index.html" target="_blank" rel="noopener noreferrer">打开示例</a>
 
 ## 使用流程
 

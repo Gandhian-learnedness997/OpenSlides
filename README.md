@@ -54,7 +54,7 @@ The slides is built on my recent paper [PIRA-Bench](https://arxiv.org/abs/2603.0
 
 ### PIRA-Bench: Proactive GUI Agents
 
-<a href="https://yuxiangchai.github.io/OpenSlides/pira-bench.html" target="_blank" rel="noopener noreferrer">Try demo</a>
+<a href="https://yuxiangchai.github.io/OpenSlides/index.html" target="_blank" rel="noopener noreferrer">Try demo</a>
 
 ## How It Works
 

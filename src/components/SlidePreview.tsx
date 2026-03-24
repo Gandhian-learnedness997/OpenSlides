@@ -464,6 +464,74 @@ const inlineImages = async (html: string): Promise<string> => {
   return result;
 };
 
+/**
+ * Inline external <link rel="stylesheet"> and <script src="..."> tags
+ * by fetching their content and embedding it directly in the HTML.
+ * This makes the downloaded file fully self-contained and viewable offline.
+ */
+const inlineExternalResources = async (html: string): Promise<string> => {
+  let result = html;
+
+  // Inline CSS: <link rel="stylesheet" href="https://...">
+  // Also resolves relative url() references (e.g. font files) into base64 data URIs
+  const cssRegex = /<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["'](https?:\/\/[^"']+)["'][^>]*\/?>/gi;
+  const cssMatches = [...html.matchAll(cssRegex)];
+  for (const match of cssMatches) {
+    const fullTag = match[0];
+    const url = match[1];
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      let css = await resp.text();
+
+      // Resolve relative url() references within the CSS (fonts, images, etc.)
+      const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+      const urlRefs = [...css.matchAll(/url\(["']?(?!data:)(\.\.\/[^"')]+|(?!https?:\/\/)[^"')]+)["']?\)/g)];
+      for (const ref of urlRefs) {
+        const relPath = ref[1];
+        const absUrl = new URL(relPath, baseUrl).href;
+        try {
+          const fontResp = await fetch(absUrl);
+          if (!fontResp.ok) continue;
+          const blob = await fontResp.blob();
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          css = css.split(ref[0]).join(`url("${dataUrl}")`);
+        } catch {
+          // Keep original URL if fetch fails
+        }
+      }
+
+      result = result.replace(fullTag, `<style data-inlined-from="${url}">\n${css}\n</style>`);
+    } catch {
+      // Keep original link if fetch fails
+    }
+  }
+
+  // Inline JS: <script src="https://..."></script>
+  // Use base64 data URIs to avoid </script> parsing issues with minified JS
+  const jsRegex = /<script\s+[^>]*src=["'](https?:\/\/[^"']+)["'][^>]*><\/script>/gi;
+  const jsMatches = [...html.matchAll(jsRegex)];
+  for (const match of jsMatches) {
+    const fullTag = match[0];
+    const url = match[1];
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const js = await resp.text();
+      const encoded = btoa(unescape(encodeURIComponent(js)));
+      result = result.replace(fullTag, `<script src="data:text/javascript;base64,${encoded}"><\/script>`);
+    } catch {
+      // Keep original script if fetch fails
+    }
+  }
+
+  return result;
+};
+
 const ASPECT_RATIO_STYLE = `<style data-aspect-ratio>
 html, body {
   width: 100%; height: 100%; margin: 0;
@@ -873,15 +941,16 @@ export default function SlidePreview({
 
   const handleDownload = async () => {
     const content = normalizedContent;
-    // Make URLs absolute first, then inline images as base64 for standalone file
+    // Make URLs absolute, inline images as base64, inline external CSS/JS for fully standalone file
     let html = makeImageUrlsAbsolute(buildPresentationHtml(content));
     html = await inlineImages(html);
+    html = await inlineExternalResources(html);
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'presentation.html';
+    a.download = projectId ? `${projectId}_presentation.html` : 'presentation.html';
     a.click();
     URL.revokeObjectURL(url);
   };

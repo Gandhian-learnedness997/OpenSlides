@@ -160,7 +160,7 @@ export default function CodeEditor({ code, onChange }: CodeEditorProps) {
       <div
         ref={lineNumbersRef}
         className="bg-[#1e1e1e] text-[#858585] py-4 pr-4 pl-2 text-right select-none border-r border-[#333] overflow-hidden"
-        style={{ fontFamily: "'Fira Code', monospace", minWidth: '3.5rem', fontSize: '13px', lineHeight: '1.5' }}
+        style={{ fontFamily: "'Fira Code', 'Consolas', 'Monaco', monospace", minWidth: '3.5rem', fontSize: '13px', lineHeight: '1.5' }}
       >
         {code.split('\n').map((_, i) => (
           <div key={i}>{i + 1}</div>
@@ -172,16 +172,28 @@ export default function CodeEditor({ code, onChange }: CodeEditorProps) {
         {/* Syntax Highlighted Layer */}
         <pre
           ref={preRef}
-          className="absolute inset-0 m-0 p-4 bg-transparent pointer-events-none overflow-hidden z-0"
+          className="absolute inset-0 m-0 p-4 bg-transparent pointer-events-none z-0"
           style={{
-            fontFamily: "'Fira Code', monospace",
+            fontFamily: "'Fira Code', 'Consolas', 'Monaco', monospace",
             fontSize: '13px',
             lineHeight: '1.5',
-            whiteSpace: 'pre'
+            whiteSpace: 'pre',
+            overflow: 'auto',
+            tabSize: 2,
+            scrollbarWidth: 'none',
           }}
         >
           <code
             className="language-html"
+            style={{
+              fontFamily: 'inherit',
+              fontSize: 'inherit',
+              lineHeight: 'inherit',
+              whiteSpace: 'inherit',
+              tabSize: 'inherit',
+              letterSpacing: 'inherit',
+              wordSpacing: 'inherit',
+            }}
             dangerouslySetInnerHTML={{
               __html: (Prism.languages.html || Prism.languages.markup
                 ? Prism.highlight(code || '', Prism.languages.html || Prism.languages.markup, 'html')
@@ -203,10 +215,11 @@ export default function CodeEditor({ code, onChange }: CodeEditorProps) {
           autoComplete="off"
           autoCorrect="off"
           style={{
-            fontFamily: "'Fira Code', monospace",
+            fontFamily: "'Fira Code', 'Consolas', 'Monaco', monospace",
             fontSize: '13px',
             lineHeight: '1.5',
-            whiteSpace: 'pre'
+            whiteSpace: 'pre',
+            tabSize: 2,
           }}
         />
       </div>

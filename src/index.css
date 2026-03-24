@@ -38,5 +38,12 @@
   }
 }
 
+/* Override Prism theme font to match code editor textarea */
+code[class*="language-"],
+pre[class*="language-"] {
+  font-family: 'Fira Code', 'Consolas', 'Monaco', monospace !important;
+  font-size: 13px !important;
+}
+
 /* RevealJS Overrides if needed */
 /* Removed height overrides to fix double scaling issue */

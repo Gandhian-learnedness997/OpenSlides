@@ -40,6 +40,12 @@ interface PendingUploadItem {
 }
 
 type SortOption = "extension" | "uploadTime" | "name";
+const SOURCE_SORT_STORAGE_KEY = "openslides:file-sort-option";
+const DEFAULT_SORT_OPTION: SortOption = "uploadTime";
+const SORT_OPTIONS: SortOption[] = ["extension", "uploadTime", "name"];
+
+const isSortOption = (value: string | null): value is SortOption =>
+  value !== null && SORT_OPTIONS.includes(value as SortOption);
 
 export default function FileManager({ projectId, onFilesChange }: FileManagerProps) {
   const [files, setFiles] = useState<LocalFile[]>([]);
@@ -52,7 +58,12 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
   const [previewTextContent, setPreviewTextContent] = useState<string>("");
   const [previewTextLoading, setPreviewTextLoading] = useState<boolean>(false);
   const [previewTextError, setPreviewTextError] = useState<string | null>(null);
-  const [sortOption, setSortOption] = useState<SortOption>("uploadTime");
+  const [sortOption, setSortOption] = useState<SortOption>(() => {
+    if (typeof window === "undefined") return DEFAULT_SORT_OPTION;
+
+    const stored = window.localStorage.getItem(SOURCE_SORT_STORAGE_KEY);
+    return isSortOption(stored) ? stored : DEFAULT_SORT_OPTION;
+  });
   const [showSortMenu, setShowSortMenu] = useState<boolean>(false);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const { t } = useLanguage();
@@ -82,6 +93,11 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
     window.addEventListener("mousedown", handlePointerDown);
     return () => window.removeEventListener("mousedown", handlePointerDown);
   }, [showSortMenu]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SOURCE_SORT_STORAGE_KEY, sortOption);
+  }, [sortOption]);
 
   // Load files from server on mount
   useEffect(() => {

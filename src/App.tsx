@@ -12,7 +12,7 @@ function buildPresentDocument(html: string): string {
 
 export default function App() {
   const isPresentRoute = window.location.pathname === "/present";
-  const [presentHtml, setPresentHtml] = useState<string | null>(null);
+  const [isPresentUnavailable, setIsPresentUnavailable] = useState(false);
   const [currentView, setCurrentView] = useState<CurrentView>("dashboard");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -23,9 +23,14 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const docKey = params.get('docKey') || 'openslides_present_html';
     const html = sessionStorage.getItem(docKey);
-    if (!html) return;
+    if (!html) {
+      setIsPresentUnavailable(true);
+      return;
+    }
     const documentHtml = buildPresentDocument(html);
-    setPresentHtml(documentHtml);
+    document.open();
+    document.write(documentHtml);
+    document.close();
   }, [isPresentRoute]);
 
   const navigateToUrl = async () => {
@@ -76,15 +81,7 @@ export default function App() {
   if (isPresentRoute) {
     return (
       <div className="w-screen h-screen bg-black">
-        {presentHtml ? (
-          <iframe
-            title="Presentation"
-            srcDoc={presentHtml}
-            className="w-full h-full border-0"
-            sandbox="allow-scripts allow-popups allow-downloads allow-pointer-lock"
-            allow="fullscreen"
-          />
-        ) : (
+        {isPresentUnavailable && (
           <div className="w-full h-full flex items-center justify-center text-sm text-white/70">
             Presentation content is unavailable for this tab.
           </div>

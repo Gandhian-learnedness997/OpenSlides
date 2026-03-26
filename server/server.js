@@ -7,10 +7,11 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
-const PROJECTS_DIR = path.join(__dirname, 'projects');
+const ROOT_DIR = path.join(__dirname, '..');
+const PROJECTS_DIR = path.join(ROOT_DIR, 'projects');
 const PROJECTS_META_PATH = path.join(PROJECTS_DIR, '_projects.json');
-const SETTINGS_PATH = path.join(__dirname, 'settings.json');
-const PRICING_PATH = path.join(__dirname, 'pricing.json');
+const SETTINGS_PATH = path.join(ROOT_DIR, 'config', 'settings.json');
+const PRICING_PATH = path.join(ROOT_DIR, 'config', 'pricing.json');
 const SAFE_PROJECT_ID_REGEX = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const STATE_ID_REGEX = /^(?:state|auto)_\d+$/;
 const ASSETS_DIRNAME = 'assets';
@@ -1677,7 +1678,7 @@ app.put('/api/pricing/custom', (req, res) => {
 // Static file serving (production)
 // ============================================================
 
-const distPath = path.join(__dirname, 'dist');
+const distPath = path.join(ROOT_DIR, 'dist');
 migrateLegacyProjects();
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));

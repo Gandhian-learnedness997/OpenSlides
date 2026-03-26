@@ -1714,6 +1714,188 @@ app.put('/api/projects/:id/context', (req, res) => {
 });
 
 // ============================================================
+// URL Sources
+// ============================================================
+
+function getProjectUrlsPath(projectId) {
+  return path.join(getProjectDir(projectId), 'urls.json');
+}
+
+function loadProjectUrls(projectId) {
+  return readJsonFile(getProjectUrlsPath(projectId), []);
+}
+
+function saveProjectUrls(projectId, urls) {
+  writeJsonFile(getProjectUrlsPath(projectId), urls);
+}
+
+function extractTextFromHtml(html) {
+  let text = html;
+  // Remove script, style, nav, footer, header, aside blocks
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+  text = text.replace(/<header[\s\S]*?<\/header>/gi, '');
+  text = text.replace(/<aside[\s\S]*?<\/aside>/gi, '');
+  text = text.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+  // Remove all HTML tags
+  text = text.replace(/<[^>]+>/g, ' ');
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+  // Collapse whitespace
+  text = text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+  // Truncate to 15K chars
+  if (text.length > 15000) text = text.slice(0, 15000) + '\n[... truncated]';
+  return text;
+}
+
+function extractTitleFromHtml(html, url) {
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (titleMatch) {
+    return titleMatch[1].replace(/<[^>]+>/g, '').trim().slice(0, 200) || new URL(url).hostname;
+  }
+  // Try og:title
+  const ogMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i);
+  if (ogMatch) return ogMatch[1].trim().slice(0, 200);
+  return new URL(url).hostname;
+}
+
+async function fetchAndExtractUrl(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; OpenSlides/1.0; +https://github.com/openslides)',
+        'Accept': 'text/html,application/xhtml+xml,*/*',
+      },
+      redirect: 'follow',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const title = extractTitleFromHtml(html, url);
+    const content = extractTextFromHtml(html);
+    return {
+      title,
+      content,
+      snippet: content.slice(0, 200),
+      charCount: content.length,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// List URL sources
+app.get('/api/projects/:id/urls', (req, res) => {
+  try {
+    requireProject(req.params.id);
+    res.json(loadProjectUrls(req.params.id));
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Failed to load URLs' });
+  }
+});
+
+// Add a URL source
+app.post('/api/projects/:id/urls', async (req, res) => {
+  try {
+    requireProject(req.params.id);
+    const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+
+    // Validate URL format
+    try { new URL(url); } catch { return res.status(400).json({ error: 'Invalid URL format' }); }
+
+    const urls = loadProjectUrls(req.params.id);
+
+    // Check for duplicate URL
+    if (urls.some(u => u.url === url)) {
+      return res.status(409).json({ error: 'This URL has already been added' });
+    }
+
+    console.log(`\n\x1b[36m━━━ [URL Fetch] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
+    console.log(`  Project: ${req.params.id}`);
+    console.log(`  URL:     ${url}`);
+
+    const startTime = Date.now();
+    const extracted = await fetchAndExtractUrl(url);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    console.log(`  \x1b[32m✓ Fetched in ${elapsed}s\x1b[0m`);
+    console.log(`  Title:   ${extracted.title}`);
+    console.log(`  Content: ${extracted.charCount} chars`);
+
+    const entry = {
+      id: crypto.randomBytes(8).toString('hex'),
+      url,
+      title: extracted.title,
+      content: extracted.content,
+      snippet: extracted.snippet,
+      charCount: extracted.charCount,
+      fetchedAt: new Date().toISOString(),
+    };
+
+    urls.push(entry);
+    saveProjectUrls(req.params.id, urls);
+    res.json(urls);
+  } catch (error) {
+    console.error(`  \x1b[31m✗ URL fetch failed: ${error.message}\x1b[0m`);
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch URL' });
+  }
+});
+
+// Delete a URL source
+app.delete('/api/projects/:id/urls/:urlId', (req, res) => {
+  try {
+    requireProject(req.params.id);
+    const urls = loadProjectUrls(req.params.id);
+    const filtered = urls.filter(u => u.id !== req.params.urlId);
+    saveProjectUrls(req.params.id, filtered);
+    res.json(filtered);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Failed to delete URL' });
+  }
+});
+
+// Refresh a URL source
+app.post('/api/projects/:id/urls/:urlId/refresh', async (req, res) => {
+  try {
+    requireProject(req.params.id);
+    const urls = loadProjectUrls(req.params.id);
+    const idx = urls.findIndex(u => u.id === req.params.urlId);
+    if (idx < 0) return res.status(404).json({ error: 'URL source not found' });
+
+    console.log(`\n\x1b[36m━━━ [URL Refresh] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
+    console.log(`  URL: ${urls[idx].url}`);
+
+    const startTime = Date.now();
+    const extracted = await fetchAndExtractUrl(urls[idx].url);
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    console.log(`  \x1b[32m✓ Refreshed in ${elapsed}s\x1b[0m`);
+    console.log(`  Content: ${extracted.charCount} chars`);
+
+    urls[idx] = {
+      ...urls[idx],
+      title: extracted.title,
+      content: extracted.content,
+      snippet: extracted.snippet,
+      charCount: extracted.charCount,
+      fetchedAt: new Date().toISOString(),
+    };
+
+    saveProjectUrls(req.params.id, urls);
+    res.json(urls);
+  } catch (error) {
+    console.error(`  \x1b[31m✗ URL refresh failed: ${error.message}\x1b[0m`);
+    res.status(error.status || 500).json({ error: error.message || 'Failed to refresh URL' });
+  }
+});
+
+// ============================================================
 // Search Agent (Tavily)
 // ============================================================
 

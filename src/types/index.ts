@@ -142,6 +142,16 @@ export interface LocalFile {
   created_at?: string;
 }
 
+export interface UrlSource {
+  id: string;
+  url: string;
+  title: string;
+  content: string;
+  snippet: string;
+  charCount: number;
+  fetchedAt: string;
+}
+
 // ============================================================
 // UI State Types
 // ============================================================

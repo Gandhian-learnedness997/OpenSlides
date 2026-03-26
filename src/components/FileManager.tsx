@@ -24,14 +24,18 @@ import {
   AlertCircle,
   ZoomIn,
   ChevronDown,
+  Globe,
+  RefreshCw,
+  Loader2,
 } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
-import { LocalFile } from "@/types";
+import { LocalFile, UrlSource } from "@/types";
 import { fetchJson, fetchOk } from "@/lib/http";
 
 interface FileManagerProps {
   projectId: string;
   onFilesChange: (files: LocalFile[]) => void;
+  onUrlsChange?: (urls: UrlSource[]) => void;
 }
 
 interface PendingUploadItem {
@@ -47,9 +51,17 @@ const SORT_OPTIONS: SortOption[] = ["extension", "uploadTime", "name"];
 const isSortOption = (value: string | null): value is SortOption =>
   value !== null && SORT_OPTIONS.includes(value as SortOption);
 
-export default function FileManager({ projectId, onFilesChange }: FileManagerProps) {
+export default function FileManager({ projectId, onFilesChange, onUrlsChange }: FileManagerProps) {
   const [files, setFiles] = useState<LocalFile[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  // URL sources state
+  const [urls, setUrls] = useState<UrlSource[]>([]);
+  const [urlInput, setUrlInput] = useState('');
+  const [isAddingUrl, setIsAddingUrl] = useState(false);
+  const [refreshingUrlId, setRefreshingUrlId] = useState<string | null>(null);
+  const [deleteUrlTarget, setDeleteUrlTarget] = useState<string | null>(null);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [previewUrlTarget, setPreviewUrlTarget] = useState<UrlSource | null>(null);
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState<boolean>(false);
   const [duplicateFiles, setDuplicateFiles] = useState<string[]>([]);
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
@@ -112,6 +124,87 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
     };
     loadFiles();
   }, [projectId, onFilesChange]);
+
+  // Load URL sources on mount
+  useEffect(() => {
+    const loadUrls = async () => {
+      try {
+        const parsed = await fetchJson<UrlSource[]>(`/api/projects/${encodeURIComponent(projectId)}/urls`, undefined, 'Failed to load URLs');
+        setUrls(parsed);
+        onUrlsChange?.(parsed);
+      } catch (error) {
+        console.error('Failed to load URLs:', error);
+      }
+    };
+    loadUrls();
+  }, [projectId]);
+
+  // URL CRUD handlers
+  const handleAddUrl = async () => {
+    const url = urlInput.trim();
+    if (!url) return;
+    try { new URL(url); } catch {
+      setUrlError(t('fileManager.invalidUrl'));
+      setTimeout(() => setUrlError(null), 3000);
+      return;
+    }
+    setIsAddingUrl(true);
+    setUrlError(null);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/urls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: t('fileManager.fetchFailed') }));
+        setUrlError(err.error === 'This URL has already been added' ? t('fileManager.urlDuplicate') : (err.error || t('fileManager.fetchFailed')));
+        setTimeout(() => setUrlError(null), 3000);
+        return;
+      }
+      const updated: UrlSource[] = await res.json();
+      setUrls(updated);
+      onUrlsChange?.(updated);
+      setUrlInput('');
+    } catch {
+      setUrlError(t('fileManager.fetchFailed'));
+      setTimeout(() => setUrlError(null), 3000);
+    } finally {
+      setIsAddingUrl(false);
+    }
+  };
+
+  const handleDeleteUrl = async (urlId: string) => {
+    try {
+      const updated = await fetchJson<UrlSource[]>(
+        `/api/projects/${encodeURIComponent(projectId)}/urls/${urlId}`,
+        { method: 'DELETE' },
+        'Failed to delete URL'
+      );
+      setUrls(updated);
+      onUrlsChange?.(updated);
+    } catch (error) {
+      console.error('Failed to delete URL:', error);
+    }
+    setDeleteUrlTarget(null);
+  };
+
+  const handleRefreshUrl = async (urlId: string) => {
+    setRefreshingUrlId(urlId);
+    try {
+      const updated = await fetchJson<UrlSource[]>(
+        `/api/projects/${encodeURIComponent(projectId)}/urls/${urlId}/refresh`,
+        { method: 'POST' },
+        'Failed to refresh URL'
+      );
+      setUrls(updated);
+      onUrlsChange?.(updated);
+    } catch (error) {
+      console.error('Failed to refresh URL:', error);
+    } finally {
+      setRefreshingUrlId(null);
+    }
+  };
 
   const ALLOWED_EXTENSIONS = [
     "png", "jpeg", "jpg", "svg", "pdf",
@@ -609,13 +702,95 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
           />
         </label>
 
+        {/* URL Source Input */}
+        <div className="space-y-2">
+          <div className="flex gap-1.5">
+            <input
+              type="url"
+              placeholder={t('fileManager.urlPlaceholder')}
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !isAddingUrl) { e.preventDefault(); handleAddUrl(); } }}
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors min-w-0"
+              disabled={isAddingUrl}
+            />
+            <button
+              onClick={handleAddUrl}
+              disabled={isAddingUrl || !urlInput.trim()}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0"
+            >
+              {isAddingUrl ? <Loader2 size={14} className="animate-spin" /> : <Globe size={14} />}
+              <span>{isAddingUrl ? t('fileManager.fetchingUrl') : t('fileManager.addUrl')}</span>
+            </button>
+          </div>
+          {urlError && (
+            <p className="text-xs text-red-400 px-1">{urlError}</p>
+          )}
+        </div>
+
+        {/* URL Sources List */}
+        {urls.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-1">{t('fileManager.urlSources')}</p>
+            {urls.map((u) => (
+              <div
+                key={u.id}
+                className="group flex items-start gap-2.5 p-2.5 rounded-xl hover:bg-panel transition-colors cursor-pointer"
+                onClick={() => setPreviewUrlTarget(u)}
+              >
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center shrink-0 mt-0.5">
+                  <Globe size={16} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white font-medium truncate" title={u.title}>{u.title}</p>
+                  <p className="text-[10px] text-gray-500 truncate" title={u.url}>{new URL(u.url).hostname}</p>
+                  <p className="text-[10px] text-gray-600">{u.charCount.toLocaleString()} {t('fileManager.urlChars')}</p>
+                </div>
+                <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  {deleteUrlTarget === u.id ? (
+                    <>
+                      <button onClick={() => handleDeleteUrl(u.id)} className="p-1.5 text-green-400 hover:bg-green-900/20 rounded-lg transition-colors" title={t('common.confirm')}>
+                        <Check size={14} />
+                      </button>
+                      <button onClick={() => setDeleteUrlTarget(null)} className="p-1.5 text-gray-400 hover:bg-gray-700 rounded-lg transition-colors" title={t('common.cancel')}>
+                        <X size={14} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleRefreshUrl(u.id)}
+                        disabled={refreshingUrlId === u.id}
+                        className="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-blue-900/20 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                        title="Refresh"
+                      >
+                        <RefreshCw size={14} className={refreshingUrlId === u.id ? 'animate-spin' : ''} />
+                      </button>
+                      <button
+                        onClick={() => setDeleteUrlTarget(u.id)}
+                        className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                        title={t('fileManager.deleteFile')}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto custom-scrollbar space-y-1">
-          {files.length === 0 ? (
+          {files.length === 0 && urls.length === 0 ? (
             <div className="text-center py-8 text-gray-500 text-sm">
               {t('fileManager.noSources')}
             </div>
-          ) : (
-            sortedFiles.map((file) => (
+          ) : (<>
+            {files.length > 0 && (
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider px-1">{t('fileManager.fileSources')}</p>
+            )}
+            {sortedFiles.map((file) => (
               (() => {
                 const iconConfig = getFileIconConfig(file);
 
@@ -688,8 +863,8 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
                   </div>
                 );
               })()
-            ))
-          )}
+            ))}
+          </>)}
         </div>
       </div>
 
@@ -941,6 +1116,49 @@ export default function FileManager({ projectId, onFilesChange }: FileManagerPro
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* URL Source Preview Modal */}
+      {previewUrlTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => setPreviewUrlTarget(null)}
+        >
+          <div
+            className="w-full max-w-5xl h-[80vh] bg-panel border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-border bg-black/20">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-white truncate">{previewUrlTarget.title}</h3>
+                <p className="text-xs text-gray-400 truncate">
+                  <a
+                    href={previewUrlTarget.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-blue-400 transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {previewUrlTarget.url}
+                  </a>
+                  {' '}• {previewUrlTarget.charCount.toLocaleString()} {t('fileManager.urlChars')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewUrlTarget(null)}
+                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto custom-scrollbar bg-[#0b0d12]">
+              <pre className="p-5 text-sm leading-6 text-gray-200 whitespace-pre-wrap break-words font-mono">
+                {previewUrlTarget.content}
+              </pre>
             </div>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import { AIProvider, AIConfig, ChatMessage, GenerateSlidesResponse, LocalFile, SearchPlanResult, SearchResult, SearchResultItem } from '@/types';
+import { AIProvider, AIConfig, ChatMessage, GenerateSlidesResponse, LocalFile, UrlSource, SearchPlanResult, SearchResult, SearchResultItem } from '@/types';
 
 const SYSTEM_INSTRUCTION = `
 You are a world-class presentation designer using reveal.js. Create stunning, complete HTML presentations.
@@ -525,21 +525,35 @@ function normalizeHistoryMessage(msg: ChatMessage): string {
 
 function buildReferenceMessage(
   projectId: string,
-  projectFiles: LocalFile[]
+  projectFiles: LocalFile[],
+  urlSources?: UrlSource[]
 ): { role: string; content: string; files?: Array<{ data: string; mimeType: string }> } | null {
-  if (!Array.isArray(projectFiles) || projectFiles.length === 0) return null;
+  const hasFiles = Array.isArray(projectFiles) && projectFiles.length > 0;
+  const hasUrls = Array.isArray(urlSources) && urlSources.length > 0;
+  if (!hasFiles && !hasUrls) return null;
 
   const sections: string[] = ['[Project reference material]'];
-  sections.push('The system is attaching the project source files separately. Use them as primary source material.');
-  sections.push(`Available project files: ${projectFiles.map((file) => file.name).join(', ')}`);
 
-  // Tell the AI the exact URLs for images so it can reference them in <img> tags
-  const imageFiles = projectFiles.filter((file) => file.mimeType.startsWith('image/'));
-  if (imageFiles.length > 0) {
-    sections.push('The following uploaded images are available. Use them in the slides with <img> tags using the EXACT URLs below:');
-    for (const f of imageFiles) {
-      sections.push(`- ${f.name}: ${f.url || `/api/projects/${projectId}/file/${encodeURIComponent(f.name)}`}`);
+  if (hasFiles) {
+    sections.push('The system is attaching the project source files separately. Use them as primary source material.');
+    sections.push(`Available project files: ${projectFiles.map((file) => file.name).join(', ')}`);
+
+    // Tell the AI the exact URLs for images so it can reference them in <img> tags
+    const imageFiles = projectFiles.filter((file) => file.mimeType.startsWith('image/'));
+    if (imageFiles.length > 0) {
+      sections.push('The following uploaded images are available. Use them in the slides with <img> tags using the EXACT URLs below:');
+      for (const f of imageFiles) {
+        sections.push(`- ${f.name}: ${f.url || `/api/projects/${projectId}/file/${encodeURIComponent(f.name)}`}`);
+      }
     }
+  }
+
+  if (hasUrls) {
+    sections.push('[URL Reference Sources]\nThe following web pages have been provided as reference material. Use this content as factual source data for the presentation:');
+    for (const u of urlSources!) {
+      sections.push(`--- ${u.title} (${u.url}) ---\n${u.content}`);
+    }
+    sections.push('[End of URL Sources]');
   }
 
   return {
@@ -574,6 +588,20 @@ export const planSearch = async (
       }
     } catch (err) {
       console.warn('[planSearch] loadProjectContext failed:', err);
+    }
+
+    // Also include URL source topics
+    try {
+      const urlRes = await fetch(`/api/projects/${encodeURIComponent(projectId)}/urls`);
+      if (urlRes.ok) {
+        const urlSources = await urlRes.json();
+        if (Array.isArray(urlSources) && urlSources.length > 0) {
+          const urlTopics = urlSources.map((u: UrlSource) => u.title).join(', ');
+          enrichedPrompt += `\n\n[URL reference sources already provided by user: ${urlTopics}]. These contain detailed content and do NOT need to be searched again.`;
+        }
+      }
+    } catch {
+      // non-fatal
     }
   }
 
@@ -706,6 +734,7 @@ export const generateSlides = async (
   chatHistory: ChatMessage[] = [],
   currentSlides?: string | null,
   files?: LocalFile[],
+  urlSources?: UrlSource[],
   conversationSummary: string = '',
   inlineAttachments?: import("@/types").ChatAttachment[],
   providerOverride?: AIProvider,
@@ -720,7 +749,7 @@ export const generateSlides = async (
 
   // Build messages array
   const messages: Array<{ role: string; content: string; files?: Array<{ data: string; mimeType: string }> }> = [];
-  const referenceMessage = buildReferenceMessage(projectId, files || []);
+  const referenceMessage = buildReferenceMessage(projectId, files || [], urlSources);
 
   if (referenceMessage) {
     messages.push(referenceMessage);

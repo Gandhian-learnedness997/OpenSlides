@@ -30,6 +30,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
+  const [uploadedUrls, setUploadedUrls] = useState<import("@/types").UrlSource[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [projectProvider, setProjectProvider] = useState<AIProvider | null>(null);
   const { t } = useLanguage();
@@ -221,6 +222,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         filteredHistory,
         currentSlidesForApi,
         uploadedFiles,
+        uploadedUrls,
         conversationSummary,
         inlineAttachments,
         providerOverride,
@@ -531,6 +533,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
           <FileManager
             projectId={project.id}
             onFilesChange={setUploadedFiles}
+            onUrlsChange={setUploadedUrls}
           />
         </div>
 

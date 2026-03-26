@@ -236,12 +236,12 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
     if (hasBadge) {
       const text = displayContent.replace(editorBadge, '').trim();
       return (
-        <>
+        <div className="flex flex-col">
           {text && <span>{text}</span>}
-          <span className="inline-flex items-center gap-1 mt-2 px-2 py-1 rounded-md bg-blue-500/15 text-blue-400 text-[11px] font-medium border border-blue-500/20">
+          <span className="inline-flex items-center gap-1 mt-2 px-2 py-1 rounded-md bg-blue-500/15 text-blue-400 text-[11px] font-medium border border-blue-500/20 w-fit">
             📄 Displayed in the editor
           </span>
-        </>
+        </div>
       );
     }
     return displayContent;

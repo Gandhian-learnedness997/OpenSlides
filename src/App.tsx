@@ -6,35 +6,13 @@ import SettingsModal from "./components/SettingsModal";
 import { Project, CurrentView } from '@/types';
 import { fetchJson } from "@/lib/http";
 
-function buildPresentDocument(html: string): string {
-  return html;
-}
-
 export default function App() {
-  const isPresentRoute = window.location.pathname === "/present";
-  const [isPresentUnavailable, setIsPresentUnavailable] = useState(false);
   const [currentView, setCurrentView] = useState<CurrentView>("dashboard");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isRestoringProject, setIsRestoringProject] = useState(false);
 
-  useEffect(() => {
-    if (!isPresentRoute) return;
-    const params = new URLSearchParams(window.location.search);
-    const docKey = params.get('docKey') || 'openslides_present_html';
-    const html = sessionStorage.getItem(docKey);
-    if (!html) {
-      setIsPresentUnavailable(true);
-      return;
-    }
-    const documentHtml = buildPresentDocument(html);
-    document.open();
-    document.write(documentHtml);
-    document.close();
-  }, [isPresentRoute]);
-
   const navigateToUrl = async () => {
-    if (isPresentRoute) return;
     const params = new URLSearchParams(window.location.search);
     const projectId = params.get("project");
 
@@ -69,26 +47,14 @@ export default function App() {
   // Restore project from URL on mount
   useEffect(() => {
     navigateToUrl();
-  }, [isPresentRoute]);
+  }, []);
 
   // Handle browser back/forward
   useEffect(() => {
     const handlePopState = () => navigateToUrl();
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [isPresentRoute]);
-
-  if (isPresentRoute) {
-    return (
-      <div className="w-screen h-screen bg-black">
-        {isPresentUnavailable && (
-          <div className="w-full h-full flex items-center justify-center text-sm text-white/70">
-            Presentation content is unavailable for this tab.
-          </div>
-        )}
-      </div>
-    );
-  }
+  }, []);
 
   return (
     <div className="h-screen bg-background text-text-primary font-sans overflow-hidden flex flex-col">

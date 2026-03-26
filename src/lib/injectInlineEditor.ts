@@ -675,6 +675,16 @@ export function injectInlineEditor(html: string, labels: InlineEditorLabels = DE
     if (event.data && event.data.type === 'inline-editor-set-arrow-color' && typeof event.data.color === 'string') {
       applyArrowColor(event.data.color);
     }
+    if (event.data && event.data.type === 'inline-editor-set-transition' && typeof event.data.transition === 'string') {
+      var sections = document.querySelectorAll('section');
+      sections.forEach(function(section) {
+        if (event.data.transition === 'default') {
+          section.removeAttribute('data-transition');
+        } else {
+          section.setAttribute('data-transition', event.data.transition);
+        }
+      });
+    }
   });
 
   // Save: clone DOM, clean up editor artifacts, post to parent

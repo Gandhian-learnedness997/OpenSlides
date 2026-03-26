@@ -1015,9 +1015,12 @@ export default function SlidePreview({
     ),
     arrowColor
   );
+  // For the editor iframe, strip both arrow color and transition so changes
+  // are applied via postMessage without causing an iframe reload/flash.
+  const strippedTransitionContent = applySectionTransition(localContent, 'default');
   const editorPreviewContent = applyArrowColor(
     applyAutoSlide(
-      contentWithSectionTransition,
+      strippedTransitionContent,
       false,
       autoPlayIntervalMs
     ),
@@ -1121,6 +1124,20 @@ export default function SlidePreview({
     if (viewMode !== 'editor') return;
     postArrowColorToEditor(arrowColor);
   }, [arrowColor, viewMode]);
+
+  const postTransitionToEditor = (transition: string) => {
+    const editorFrame = editorFrameRef.current;
+    if (!editorFrame?.contentWindow) return;
+    editorFrame.contentWindow.postMessage(
+      { type: 'inline-editor-set-transition', transition },
+      '*'
+    );
+  };
+
+  useEffect(() => {
+    if (viewMode !== 'editor') return;
+    postTransitionToEditor(sectionTransition);
+  }, [sectionTransition, viewMode]);
 
   const handleViewChange = (mode: ViewMode) => {
     if (mode === viewMode) return;
@@ -1539,10 +1556,9 @@ export default function SlidePreview({
             <div className="flex-1 flex items-center justify-center p-4 overflow-hidden">
               <iframe
                 ref={editorFrameRef}
-                key={sectionTransition}
                 title="Slide Editor"
                 srcDoc={injectInlineEditor(editorFrameContent, inlineEditorLabels)}
-                onLoad={() => postArrowColorToEditor(arrowColor)}
+                onLoad={() => { postArrowColorToEditor(arrowColor); postTransitionToEditor(sectionTransition); }}
                 style={{
                   border: 0,
                   borderRadius: '8px',

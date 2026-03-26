@@ -6,3 +6,4 @@ dist
 projects/*
 !projects/.gitkeep
 settings.json
+.DS_Store

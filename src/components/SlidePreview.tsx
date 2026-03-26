@@ -1594,7 +1594,7 @@ export default function SlidePreview({
       <div className="flex-1 relative min-h-0">
         {/* Loading overlay */}
         {(isGenerating || isCreatingNewChat) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center z-50 gap-3 bg-background/80 backdrop-blur-sm">
+          <div className="absolute inset-0 flex flex-col items-center justify-center z-10 gap-3 bg-background/80 backdrop-blur-sm">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
             {isGenerating && (
               <span className="text-gray-400 font-medium animate-pulse">{t('slidePreview.generating')}</span>

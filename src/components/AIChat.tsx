@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Bot, User, Plus, Info, X, Paperclip, Image as ImageIcon, FileText, ChevronDown } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
 import { ChatMessage, ChatAttachment, AIProvider } from "@/types";
-import { loadSettings, getConfiguredProviders, getCachedSettings } from "@/lib/ai";
+import { loadSettings, getConfiguredProviders } from "@/lib/ai";
 
 interface AIChatProps {
   onGenerate: (prompt: string, includeSlides: boolean, attachments?: ChatAttachment[], providerOverride?: AIProvider) => Promise<any>;
@@ -14,6 +14,8 @@ interface AIChatProps {
   pendingMessage?: string | null;
   onPendingMessageConsumed?: () => void;
   searchStatus?: 'idle' | 'planning' | 'searching' | 'generating';
+  projectProvider?: AIProvider | null;
+  onProjectProviderChange?: (provider: AIProvider) => void;
 }
 
 const PROVIDER_LABELS: Record<AIProvider, string> = {
@@ -25,34 +27,41 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
   qwen: 'Qwen Coding',
 };
 
-export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat, pendingMessage, onPendingMessageConsumed, searchStatus = 'idle' }: AIChatProps) {
+export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat, pendingMessage, onPendingMessageConsumed, searchStatus = 'idle', projectProvider, onProjectProviderChange }: AIChatProps) {
   const [message, setMessage] = useState<string>("");
   const [includeSlides, setIncludeSlides] = useState(true);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<AIProvider | null>(() => {
-    const saved = localStorage.getItem('openslides_selected_provider');
-    return saved ? (saved as AIProvider) : null;
-  });
   const [configuredProviders, setConfiguredProviders] = useState<AIProvider[]>([]);
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLFormElement | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement | null>(null);
   const { t } = useLanguage();
 
-  // Load configured providers on mount and refresh periodically
+  // The selected provider comes from the project (per-project, not global)
+  const selectedProvider = projectProvider || null;
+  const setSelectedProvider = (provider: AIProvider) => {
+    onProjectProviderChange?.(provider);
+  };
+
+  // Load configured providers on mount and auto-select for new projects
   const refreshProviders = useCallback(() => {
     loadSettings().then(() => {
       const configured = getConfiguredProviders();
       setConfiguredProviders(configured);
-      const settings = getCachedSettings();
-      if (settings && !selectedProvider) {
-        setSelectedProvider(settings.activeProvider);
-        localStorage.setItem('openslides_selected_provider', settings.activeProvider);
+      if (!projectProvider) {
+        if (configured.length === 1) {
+          // Only one provider configured — auto-select it
+          onProjectProviderChange?.(configured[0]);
+        } else if (configured.length > 1) {
+          // Multiple providers, no selection yet — show picker
+          setShowModelPicker(true);
+        }
       }
     });
-  }, [selectedProvider]);
+  }, [projectProvider, onProjectProviderChange]);
 
   useEffect(() => {
     refreshProviders();
@@ -158,6 +167,8 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
   };
 
   const sendMessage = async (userMessage: string, currentAttachments?: ChatAttachment[]) => {
+    // Dismiss model picker on first message
+    if (showModelPicker) setShowModelPicker(false);
     // Add user message with attachments
     const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: userMessage, attachments: currentAttachments }];
     setChatHistory(newHistory);
@@ -281,6 +292,30 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
         ref={chatContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-background"
       >
+        {/* Model picker for new projects with multiple providers */}
+        {showModelPicker && configuredProviders.length > 1 && (
+          <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+            <p className="text-xs text-blue-300 mb-2 font-medium">Select a model for this project:</p>
+            <div className="flex flex-wrap gap-1.5">
+              {configuredProviders.map(p => (
+                <button
+                  key={p}
+                  onClick={() => {
+                    setSelectedProvider(p);
+                    setShowModelPicker(false);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    selectedProvider === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                  }`}
+                >
+                  {PROVIDER_LABELS[p]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {chatHistory.map((msg, index) => (
           <div
             key={index}
@@ -451,7 +486,7 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
                     <button
                       key={p}
                       type="button"
-                      onClick={() => { setSelectedProvider(p); localStorage.setItem('openslides_selected_provider', p); setShowProviderDropdown(false); }}
+                      onClick={() => { setSelectedProvider(p); setShowProviderDropdown(false); }}
                       className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
                         selectedProvider === p
                           ? 'bg-blue-600/20 text-blue-400'

@@ -1486,6 +1486,18 @@ app.patch('/api/projects/:id', (req, res) => {
         return res.status(409).json({ error: 'A project with this name already exists' });
       }
       nextProject.name = nextName;
+
+      // Generate new ID from the new name and rename the project folder
+      const usedIds = new Set(projects.filter((p) => p.id !== projectId).map((p) => p.id));
+      const newId = createProjectId(nextName, usedIds);
+      if (newId !== projectId) {
+        const oldDir = getProjectDir(projectId);
+        const newDir = path.join(PROJECTS_DIR, newId);
+        if (fs.existsSync(oldDir)) {
+          fs.renameSync(oldDir, newDir);
+        }
+        nextProject.id = newId;
+      }
     }
 
     if (Object.prototype.hasOwnProperty.call(req.body || {}, 'last_accessed_at')) {
@@ -1898,11 +1910,18 @@ app.post('/api/plan', async (req, res) => {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+      const plannerUsage = result.usage || {};
       const plan = {
         needsSearch: !!parsed.needsSearch,
         needsContext: parsed.needsContext !== false,
         queries: Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
         reasoning: String(parsed.reasoning || ''),
+        usage: {
+          inputTokens: plannerUsage.inputTokens || 0,
+          outputTokens: plannerUsage.outputTokens || 0,
+          cachedTokens: plannerUsage.cachedTokens || 0,
+          thinkingTokens: plannerUsage.thinkingTokens || 0,
+        },
       };
 
       console.log(`  \x1b[32m✓ Planned in ${elapsed}s\x1b[0m`);
@@ -1914,6 +1933,7 @@ app.post('/api/plan', async (req, res) => {
         plan.queries.forEach((q, i) => console.log(`      ${i + 1}. "${q}"`));
       }
       console.log(`    reasoning:    "${plan.reasoning}"`);
+      console.log(`    tokens:       in=${plan.usage.inputTokens} out=${plan.usage.outputTokens}`);
 
       res.json(plan);
     } else {

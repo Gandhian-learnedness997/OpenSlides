@@ -2,11 +2,11 @@ import React, { useState, useRef, useEffect } from "react";
 import FileManager from "./FileManager";
 import SlidePreview from "./SlidePreview";
 import AIChat from "./AIChat";
-import { generateSlides, planSearch, executeSearch, formatSearchContext, saveProjectContext, loadProjectContextFormatted } from "../lib/ai";
+import { generateSlides, planSearch, executeSearch, formatSearchContext, saveProjectContext, loadProjectContextFormatted, computePrice, loadConfig, getDefaultModel } from "../lib/ai";
 import { useLanguage } from "../hooks/useLanguage";
 import { getSlideInfo, saveSlideInfo, saveState, loadStateContent, deleteState } from "../lib/versionControl";
 import { CheckCircle, AlertCircle } from "lucide-react";
-import { Project, SlideInfo, Toast, ChatMessage, LocalFile, ConversationContext } from "@/types";
+import { Project, SlideInfo, Toast, ChatMessage, LocalFile, ConversationContext, AIProvider } from "@/types";
 
 interface ProjectDetailProps {
   project: Project;
@@ -31,11 +31,27 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [projectProvider, setProjectProvider] = useState<AIProvider | null>(null);
   const { t } = useLanguage();
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: "", type: "success" }), 2000);
+  };
+
+  const handleProjectProviderChange = async (provider: AIProvider) => {
+    setProjectProvider(provider);
+    // Persist to project info
+    const newInfo: SlideInfo = {
+      states: slideInfo?.states || [],
+      auto_states: slideInfo?.auto_states || [],
+      current_state: slideInfo?.current_state || '',
+      selectedProvider: provider,
+    };
+    setSlideInfo(prev => prev ? { ...prev, selectedProvider: provider } : newInfo);
+    try {
+      await saveSlideInfo(project.id, slideInfo ? { ...slideInfo, selectedProvider: provider } : newInfo);
+    } catch { /* non-fatal */ }
   };
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -89,6 +105,11 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       try {
         const info = await getSlideInfo(project.id);
         setSlideInfo(info);
+
+        // Load per-project provider selection
+        if (info?.selectedProvider) {
+          setProjectProvider(info.selectedProvider);
+        }
 
         let latestState = null;
         if (info) {
@@ -148,6 +169,11 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
       // Planner decides: (1) whether to search the web, (2) whether to include existing context
       let searchContext = '';
       let persistedContext = '';
+      // Accumulate token usage from planner agent
+      let extraInputTokens = 0;
+      let extraOutputTokens = 0;
+      let extraCachedTokens = 0;
+      let extraThinkingTokens = 0;
       console.log('[handleGenerateSlides] userPrompt:', userPrompt ? `"${userPrompt.slice(0, 80)}..."` : '(empty)');
       console.log('[handleGenerateSlides] providerOverride:', providerOverride, 'project.id:', project.id);
       if (userPrompt) {
@@ -156,6 +182,14 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
           console.log('[handleGenerateSlides] About to call planSearch...');
           const plan = await planSearch(userPrompt, providerOverride, project.id);
           console.log('[handleGenerateSlides] planSearch returned:', plan);
+
+          // Accumulate planner token usage
+          if (plan.usage) {
+            extraInputTokens += plan.usage.inputTokens || 0;
+            extraOutputTokens += plan.usage.outputTokens || 0;
+            extraCachedTokens += plan.usage.cachedTokens || 0;
+            extraThinkingTokens += plan.usage.thinkingTokens || 0;
+          }
 
           if (plan.needsSearch && plan.queries.length > 0) {
             setSearchStatus('searching');
@@ -192,7 +226,22 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         providerOverride,
         searchContext || persistedContext
       );
-      const { content, chatText, usage } = responseData;
+      const { content, chatText } = responseData;
+      // Merge planner/agent token usage into the final usage
+      const mergedInput = responseData.usage.inputTokens + extraInputTokens;
+      const mergedOutput = responseData.usage.outputTokens + extraOutputTokens;
+      const mergedCached = responseData.usage.cachedTokens + extraCachedTokens;
+      const mergedThinking = responseData.usage.thinkingTokens + extraThinkingTokens;
+      const config = await loadConfig(providerOverride);
+      const model = config.model || getDefaultModel(config.provider);
+      const usage = {
+        inputTokens: mergedInput,
+        outputTokens: mergedOutput,
+        cachedTokens: mergedCached,
+        thinkingTokens: mergedThinking,
+        totalTokens: mergedInput + mergedOutput,
+        estimatedPrice: computePrice(config.provider, model, mergedInput, mergedOutput, mergedCached, mergedThinking),
+      };
       setSlidesData(content);
 
       // Auto Save
@@ -536,6 +585,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             pendingMessage={pendingMessage}
             onPendingMessageConsumed={() => setPendingMessage(null)}
             searchStatus={searchStatus}
+            projectProvider={projectProvider}
+            onProjectProviderChange={handleProjectProviderChange}
           />
         </div>
       </div>

@@ -73,6 +73,12 @@ export interface SearchPlanResult {
   needsContext: boolean;
   queries: string[];
   reasoning: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    thinkingTokens: number;
+  };
 }
 
 export interface SearchResultItem {
@@ -105,6 +111,7 @@ export interface SlideInfo {
   states: VersionState[];
   auto_states: VersionState[];
   current_state: string;
+  selectedProvider?: AIProvider;
 }
 
 export interface LoadedContent {

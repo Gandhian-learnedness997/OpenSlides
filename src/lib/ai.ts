@@ -377,7 +377,7 @@ export function getConfig(): AIConfig {
   return _cachedConfig || { provider: 'gemini', apiKey: '', model: '', baseUrl: '', hasStoredApiKey: false };
 }
 
-function getDefaultModel(provider: AIProvider): string {
+export function getDefaultModel(provider: AIProvider): string {
   switch (provider) {
     case 'gemini': return 'gemini-3.1-pro-preview';
     case 'claude': return 'claude-sonnet-4.6';
@@ -445,7 +445,7 @@ export function lookupPricing(model: string): PricingTier | null {
 
 const FALLBACK_PRICING: PricingTier = { input: 2.0, cached: 0.50, output: 8.0 };
 
-function computePrice(
+export function computePrice(
   _provider: AIProvider,
   model: string,
   inputTokens: number,
@@ -486,8 +486,29 @@ function applyDiffs(diffContent: string, currentHtml: string): string {
       result = result.replace(searchText, replaceText);
       appliedCount++;
     } else {
-      console.warn(`Diff block failed to match: "${searchText.substring(0, 80)}..."`);
-      failedCount++;
+      // Try fuzzy match: normalize whitespace (collapse runs of spaces/tabs, trim lines)
+      const normalizeWs = (s: string) => s.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).join('\n');
+      const normalizedSearch = normalizeWs(searchText);
+      // Find the matching region by normalizing each candidate window
+      const lines = result.split('\n');
+      const searchLines = normalizedSearch.split('\n');
+      let matched = false;
+      for (let i = 0; i <= lines.length - searchLines.length; i++) {
+        const window = lines.slice(i, i + searchLines.length);
+        if (normalizeWs(window.join('\n')) === normalizedSearch) {
+          // Replace the original lines with the replacement text
+          const before = lines.slice(0, i).join('\n');
+          const after = lines.slice(i + searchLines.length).join('\n');
+          result = before + (before ? '\n' : '') + replaceText + (after ? '\n' : '') + after;
+          matched = true;
+          appliedCount++;
+          break;
+        }
+      }
+      if (!matched) {
+        console.warn(`Diff block failed to match: "${searchText.substring(0, 80)}..."`);
+        failedCount++;
+      }
     }
   }
 
@@ -791,18 +812,27 @@ export const generateSlides = async (
   // Extract HTML content for the editor
   let generatedHtml = rawText;
 
-  // Apply diffs if response contains diff blocks
+  // Check for diff blocks (edit mode) — these take priority over html blocks
   const diffMatch = rawText.match(/```diff([\s\S]*?)```/);
-  if (diffMatch && currentSlides) {
-    generatedHtml = applyDiffs(diffMatch[1], currentSlides);
-  } else if (diffMatch && !currentSlides) {
-    console.warn('Diff response but no currentSlides provided, returning raw response');
-  }
+  // Also detect raw SEARCH/REPLACE blocks without a code fence (some models skip the fence)
+  const rawDiffMatch = !diffMatch && rawText.includes('<<<SEARCH') && rawText.includes('>>>REPLACE');
 
-  // Extract HTML from code block if present
-  const htmlMatch = rawText.match(/```html([\s\S]*?)```/);
-  if (htmlMatch) {
-    generatedHtml = htmlMatch[1].trim();
+  if ((diffMatch || rawDiffMatch) && currentSlides) {
+    const diffContent = diffMatch ? diffMatch[1] : rawText;
+    generatedHtml = applyDiffs(diffContent, currentSlides);
+  } else if ((diffMatch || rawDiffMatch) && !currentSlides) {
+    console.warn('Diff response but no currentSlides provided, returning raw response');
+    // Fall through to try html extraction
+    const htmlMatch = rawText.match(/```html([\s\S]*?)```/);
+    if (htmlMatch) {
+      generatedHtml = htmlMatch[1].trim();
+    }
+  } else {
+    // No diffs — extract HTML from code block if present (new presentation mode)
+    const htmlMatch = rawText.match(/```html([\s\S]*?)```/);
+    if (htmlMatch) {
+      generatedHtml = htmlMatch[1].trim();
+    }
   }
 
   // Compute usage and pricing

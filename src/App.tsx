@@ -68,17 +68,28 @@ export default function App() {
         projectName={selectedProject?.name}
         projectId={selectedProject?.id}
         onSettingsClick={() => setIsSettingsModalOpen(true)}
-        onRename={async (newName: string) => {
-          if (!selectedProject) return;
+        onRename={async (newName: string): Promise<string | null> => {
+          if (!selectedProject) return null;
           try {
-            const updatedProject = await fetchJson<Project>(`/api/projects/${encodeURIComponent(selectedProject.id)}`, {
+            const res = await fetch(`/api/projects/${encodeURIComponent(selectedProject.id)}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: newName }),
-            }, 'Failed to rename project');
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ error: 'Failed to rename project' }));
+              return err.error || 'Failed to rename project';
+            }
+            const updatedProject: Project = await res.json();
             setSelectedProject(updatedProject);
+            // Update URL if project ID changed
+            if (updatedProject.id !== selectedProject.id) {
+              window.history.replaceState({}, "", `?project=${updatedProject.id}`);
+            }
+            return null;
           } catch (error) {
             console.error('Failed to rename project:', error);
+            return 'Failed to rename project';
           }
         }}
       />

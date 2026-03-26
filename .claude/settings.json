@@ -55,7 +55,9 @@
       "Bash(curl -s http://localhost:3001/api/settings)",
       "Bash(curl -sv http://localhost:3001/api/settings)",
       "Bash(kill 15816)",
-      "Bash(kill 16404)"
+      "Bash(kill 16404)",
+      "Bash(grep -n \"generating\\\\|loading\\\\|overlay\\\\|spinner\" /Users/yuxiang/Research/fun/OpenSlides/src/components/*.tsx -i)",
+      "Bash(grep -n \"z-index\\\\|position.*fixed\\\\|position.*absolute\" /Users/yuxiang/Research/fun/OpenSlides/src/components/*.tsx /Users/yuxiang/Research/fun/OpenSlides/src/App.tsx)"
     ]
   }
 }

@@ -11,7 +11,7 @@ interface NavbarProps {
   projectName?: string;
   projectId?: string;
   onSettingsClick: () => void;
-  onRename: (newName: string) => void;
+  onRename: (newName: string) => Promise<string | null>;
 }
 
 export default function Navbar({
@@ -27,24 +27,37 @@ export default function Navbar({
   const [isEditing, setIsEditing] = useState(false);
   const [editedName, setEditedName] = useState(projectName || "");
   const [showHelp, setShowHelp] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   useEffect(() => {
     setEditedName(projectName || "");
   }, [projectName]);
 
-  const handleRename = () => {
+  // Auto-dismiss rename error after 3 seconds
+  useEffect(() => {
+    if (renameError) {
+      const timer = setTimeout(() => setRenameError(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [renameError]);
+
+  const handleRename = async () => {
     if (!editedName.trim() || editedName === projectName) {
       setIsEditing(false);
       setEditedName(projectName || "");
       return;
     }
-    onRename(editedName);
+    const error = await onRename(editedName);
+    if (error) {
+      setRenameError(error);
+      setEditedName(projectName || "");
+    }
     setIsEditing(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
-      handleRename();
+      void handleRename();
     } else if (e.key === "Escape") {
       setIsEditing(false);
       setEditedName(projectName || "");
@@ -98,6 +111,11 @@ export default function Navbar({
                   </div>
                 )}
               </div>
+              {renameError && (
+                <span className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-1 rounded-md animate-in fade-in">
+                  {renameError}
+                </span>
+              )}
             </>
           )}
         </div>

@@ -30,6 +30,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const { t } = useLanguage();
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
@@ -135,7 +136,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     return filtered;
   };
 
-  const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true, inlineAttachments?: import("@/types").ChatAttachment[]) => {
+  const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true, inlineAttachments?: import("@/types").ChatAttachment[], providerOverride?: import("@/types").AIProvider) => {
     setIsGenerating(true);
     try {
       const rawHistory = chatHistoryRef.current || [];
@@ -149,7 +150,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
         currentSlidesForApi,
         uploadedFiles,
         conversationSummary,
-        inlineAttachments
+        inlineAttachments,
+        providerOverride
       );
       const { content, chatText, usage } = responseData;
       setSlidesData(content);
@@ -466,7 +468,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             onRenameVersion={handleRenameVersion}
             onDeleteVersion={handleDeleteVersion}
             onEditorChange={(html: string) => setSlidesData(html)}
-            onFixOverflow={(prompt: string) => handleGenerateSlides(prompt, true)}
+            onFixOverflow={(prompt: string) => setPendingMessage(prompt)}
             projectId={project.id}
           />
         </div>
@@ -491,6 +493,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             isCreatingNewChat={isCreatingNewChat}
             chatHistoryRef={chatHistoryRef}
             loadedHistory={loadedChatHistory}
+            pendingMessage={pendingMessage}
+            onPendingMessageConsumed={() => setPendingMessage(null)}
           />
         </div>
       </div>

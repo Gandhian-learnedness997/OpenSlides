@@ -15,6 +15,7 @@ const SAFE_PROJECT_ID_REGEX = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const STATE_ID_REGEX = /^(?:state|auto)_\d+$/;
 const ASSETS_DIRNAME = 'assets';
 
+
 // Ensure projects directory exists
 if (!fs.existsSync(PROJECTS_DIR)) {
   fs.mkdirSync(PROJECTS_DIR, { recursive: true });
@@ -30,6 +31,11 @@ const DEFAULT_BASE_URLS = {
   gemini: 'https://generativelanguage.googleapis.com',
   claude: 'https://api.anthropic.com',
   openai: 'https://api.openai.com/v1',
+  kimi: 'https://api.kimi.com/coding/v1',
+  zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  minimax: 'https://api.minimax.chat/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
 };
 
 const FILE_INTRO_TEXT = 'Here are the uploaded reference files. Use their content to create the presentation:';
@@ -37,7 +43,7 @@ const FILE_ACK_TEXT = 'I have received and reviewed all uploaded files. I will u
 const GEMINI_CACHE_TTL_SECONDS = 14400; // 4 hours
 const GEMINI_FILE_POLL_INTERVAL_MS = 1500;
 const GEMINI_FILE_POLL_TIMEOUT_MS = 60000;
-const GEMINI_GENERATE_TIMEOUT_MS = 180000;
+const GEMINI_GENERATE_TIMEOUT_MS = 300000;
 const GEMINI_RETRY_DELAY_MS = 1200;
 const GEMINI_MAX_RETRIES = 3;
 const SUPPORTED_PROVIDERS = new Set(Object.keys(DEFAULT_BASE_URLS));
@@ -356,11 +362,34 @@ function loadProjectFilesForAI(projectId) {
 
 function loadSettings() {
   const settings = readJsonFile(SETTINGS_PATH, {});
+  // Migrate legacy flat format to per-provider format
+  if (settings.apiKey && !settings.providers) {
+    const legacyProvider = SUPPORTED_PROVIDERS.has(settings.provider) ? settings.provider : 'gemini';
+    settings.providers = {
+      [legacyProvider]: {
+        apiKey: settings.apiKey,
+        model: settings.model || '',
+        baseUrl: settings.baseUrl || '',
+      },
+    };
+    settings.activeProvider = legacyProvider;
+    delete settings.apiKey;
+    delete settings.model;
+    delete settings.baseUrl;
+    writeJsonFile(SETTINGS_PATH, settings);
+  }
   return {
-    provider: SUPPORTED_PROVIDERS.has(settings.provider) ? settings.provider : 'gemini',
-    apiKey: typeof settings.apiKey === 'string' ? settings.apiKey.trim() : '',
-    model: typeof settings.model === 'string' ? settings.model.trim() : '',
-    baseUrl: typeof settings.baseUrl === 'string' ? settings.baseUrl.trim() : '',
+    activeProvider: SUPPORTED_PROVIDERS.has(settings.activeProvider) ? settings.activeProvider : 'gemini',
+    providers: settings.providers || {},
+  };
+}
+
+function getProviderConfig(settings, provider) {
+  const cfg = settings.providers?.[provider] || {};
+  return {
+    apiKey: typeof cfg.apiKey === 'string' ? cfg.apiKey.trim() : '',
+    model: typeof cfg.model === 'string' ? cfg.model.trim() : '',
+    baseUrl: typeof cfg.baseUrl === 'string' ? cfg.baseUrl.trim() : '',
   };
 }
 
@@ -431,14 +460,17 @@ function isNativeOpenAIBaseUrl(baseUrl) {
 
 app.post('/api/generate', async (req, res) => {
   const settings = loadSettings();
-  const provider = typeof req.body.provider === 'string' ? req.body.provider : settings.provider;
-  const model = typeof req.body.model === 'string' ? req.body.model : settings.model;
+  const provider = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
+    ? req.body.provider
+    : settings.activeProvider;
+  const providerCfg = getProviderConfig(settings, provider);
+  const model = typeof req.body.model === 'string' && req.body.model.trim()
+    ? req.body.model.trim()
+    : providerCfg.model;
   const projectId = typeof req.body.projectId === 'string' && isSafeProjectId(req.body.projectId)
     ? req.body.projectId
     : 'default-project';
-  const apiKey = typeof req.body.apiKey === 'string' && req.body.apiKey.trim()
-    ? req.body.apiKey.trim()
-    : settings.apiKey;
+  const apiKey = providerCfg.apiKey;
   const system = typeof req.body.system === 'string' ? req.body.system : '';
   const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
   const temperature = Number.isFinite(Number(req.body.temperature)) ? Number(req.body.temperature) : 0.7;
@@ -449,12 +481,12 @@ app.post('/api/generate', async (req, res) => {
   }
 
   if (!apiKey) {
-    return res.status(400).json({ error: 'No API key provided' });
+    return res.status(400).json({ error: `No API key configured for ${provider}. Please set it in Settings.` });
   }
 
   let base;
   try {
-    base = sanitizeBaseUrl(typeof req.body.baseUrl === 'string' ? req.body.baseUrl : settings.baseUrl, provider);
+    base = sanitizeBaseUrl(providerCfg.baseUrl || (typeof req.body.baseUrl === 'string' ? req.body.baseUrl : ''), provider);
   } catch (error) {
     return res.status(error.status || 400).json({ error: error.message || 'Invalid base URL' });
   }
@@ -468,7 +500,7 @@ app.post('/api/generate', async (req, res) => {
     } else if (provider === 'openai' && isNativeOpenAIBaseUrl(base)) {
       result = await callOpenAINative(base, apiKey, model, projectId, system, messages, temperature, files);
     } else {
-      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, files);
+      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, files, provider);
     }
     res.json(result);
   } catch (error) {
@@ -551,22 +583,42 @@ async function callClaude(baseUrl, apiKey, model, systemText, messages, temperat
     messages: sanitized,
   };
 
-  const response = await fetch(`${baseUrl}/v1/messages`, {
+  const requestBody = JSON.stringify(body);
+  const requestOptions = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify(body),
-  });
+    body: requestBody,
+  };
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errText}`);
+  let data;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1200;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.warn(`[claude] retry ${attempt}/${MAX_RETRIES} after ${delay} ms`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+      const response = await fetch(`${baseUrl}/v1/messages`, requestOptions);
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Claude API error ${response.status}: ${errText}`);
+      }
+      data = await response.json();
+      break;
+    } catch (error) {
+      const isSocketError = /socket|ECONNRESET|other side closed|UND_ERR/i.test(String(error?.message || '') + String(error?.cause?.message || ''));
+      if (!isSocketError || attempt >= MAX_RETRIES) {
+        throw error;
+      }
+      console.warn(`[claude] attempt ${attempt + 1} failed: ${error.message}`);
+    }
   }
-
-  const data = await response.json();
 
   // Extract text from response
   const text = data.content
@@ -702,7 +754,7 @@ function getGeminiRequestStats(messages, files, bodyString) {
 }
 
 async function fetchGeminiJson(url, options, label) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, { ...options, keepalive: false, headers: { ...options.headers, Connection: 'close' } });
   const raw = await response.text();
 
   if (!response.ok) {
@@ -950,11 +1002,18 @@ async function callGemini(baseUrl, apiKey, model, projectId, systemText, message
     sanitized.shift();
   }
 
+  // Set thinking level based on model: "minimal" for flash/lite, "low" for pro/others
+  const modelLower = geminiModel.toLowerCase();
+  const thinkingLevel = (modelLower.includes('flash') || modelLower.includes('lite')) ? 'minimal' : 'low';
+
   const body = {
     contents: sanitized,
     generationConfig: {
       temperature,
       maxOutputTokens: 16384,
+      thinkingConfig: {
+        thinkingLevel,
+      },
     },
   };
 
@@ -1200,7 +1259,7 @@ async function callOpenAINative(baseUrl, apiKey, model, projectId, systemText, m
   };
 }
 
-async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages, temperature, files) {
+async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages, temperature, files, provider) {
   // OpenAI-compatible format (GPT, proxies like aihubmix, etc.)
   const oaiMessages = [];
 
@@ -1240,21 +1299,49 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
 
   // Base URL should include any path prefix (e.g. /v1 for OpenAI, /v1beta/openai for Gemini)
   const url = baseUrl.replace(/\/+$/, '');
-  const response = await fetch(`${url}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`API error ${response.status}: ${errText}`);
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`,
+  };
+  if (provider === 'kimi') {
+    headers['User-Agent'] = 'claude-code/0.1.0';
   }
+  const requestBody = JSON.stringify(body);
+  console.log(`[openai-compat] provider=${provider} url=${url}/chat/completions model=${body.model} msgCount=${oaiMessages.length} bodySize=${requestBody.length} UA=${headers['User-Agent'] || 'default'}`);
 
-  const data = await response.json();
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1200;
+  let lastError;
+  let data;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.warn(`[openai-compat] retry ${attempt}/${MAX_RETRIES} after ${delay} ms`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+      const response = await fetch(`${url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: requestBody,
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`API error ${response.status}: ${errText}`);
+      }
+      data = await response.json();
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      const isSocketError = /socket|ECONNRESET|other side closed|UND_ERR/i.test(String(error?.message || '') + String(error?.cause?.message || ''));
+      if (!isSocketError || attempt >= MAX_RETRIES) {
+        throw error;
+      }
+      console.warn(`[openai-compat] attempt ${attempt + 1} failed: ${error.message}`);
+    }
+  }
+  if (lastError) throw lastError;
   const text = data.choices?.[0]?.message?.content || '';
   const usageCompat = data.usage || {};
 
@@ -1523,41 +1610,46 @@ app.get('/api/projects/:id/file/:filename', (req, res) => {
 app.get('/api/settings', (req, res) => {
   const settings = loadSettings();
   res.setHeader('Cache-Control', 'no-store');
+  // Return active provider and all per-provider configs
+  const configuredProviders = {};
+  for (const [key, cfg] of Object.entries(settings.providers || {})) {
+    configuredProviders[key] = {
+      apiKey: cfg.apiKey || '',
+      model: cfg.model || '',
+      baseUrl: cfg.baseUrl || '',
+    };
+  }
   res.json({
-    provider: settings.provider,
-    model: settings.model,
-    baseUrl: settings.baseUrl,
-    hasApiKey: Boolean(settings.apiKey),
+    activeProvider: settings.activeProvider,
+    providers: configuredProviders,
   });
 });
 
 app.put('/api/settings', (req, res) => {
   try {
     const existing = loadSettings();
-    const provider = typeof req.body?.provider === 'string' ? req.body.provider : existing.provider;
-    if (!SUPPORTED_PROVIDERS.has(provider)) {
+    const activeProvider = typeof req.body?.activeProvider === 'string' && SUPPORTED_PROVIDERS.has(req.body.activeProvider)
+      ? req.body.activeProvider
+      : existing.activeProvider;
+
+    // Update a specific provider's config
+    const targetProvider = typeof req.body?.provider === 'string' ? req.body.provider : activeProvider;
+    if (!SUPPORTED_PROVIDERS.has(targetProvider)) {
       return res.status(400).json({ error: 'Unsupported provider' });
     }
 
-    const nextSettings = {
-      provider,
-      model: typeof req.body?.model === 'string' ? req.body.model.trim() : existing.model,
-      baseUrl: typeof req.body?.baseUrl === 'string' ? req.body.baseUrl.trim() : existing.baseUrl,
-      apiKey: existing.apiKey,
+    const providers = { ...existing.providers };
+    const existingCfg = providers[targetProvider] || {};
+
+    providers[targetProvider] = {
+      apiKey: typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : (existingCfg.apiKey || ''),
+      model: typeof req.body?.model === 'string' ? req.body.model.trim() : (existingCfg.model || ''),
+      baseUrl: typeof req.body?.baseUrl === 'string' ? req.body.baseUrl.trim() : (existingCfg.baseUrl || ''),
     };
 
-    if (typeof req.body?.apiKey === 'string') {
-      const trimmedKey = req.body.apiKey.trim();
-      if (trimmedKey) {
-        nextSettings.apiKey = trimmedKey;
-      }
-    }
-    if (req.body?.clearApiKey === true) {
-      nextSettings.apiKey = '';
-    }
-
+    const nextSettings = { activeProvider, providers };
     writeJsonFile(SETTINGS_PATH, nextSettings);
-    res.json({ success: true, hasApiKey: Boolean(nextSettings.apiKey) });
+    res.json({ success: true });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || 'Failed to save settings' });
   }

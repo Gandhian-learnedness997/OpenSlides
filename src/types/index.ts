@@ -2,7 +2,7 @@
 // Core Domain Types
 // ============================================================
 
-export type AIProvider = 'gemini' | 'claude' | 'openai';
+export type AIProvider = 'gemini' | 'claude' | 'openai' | 'kimi' | 'zhipu' | 'qwen';
 
 export interface AIConfig {
   provider: AIProvider;

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, Check, AlertCircle, Key, Cpu, Eye, EyeOff, Globe, DollarSign } from "lucide-react";
+import { X, Check, AlertCircle, Eye, EyeOff, Globe, DollarSign, Cpu, Key, CircleDot, Info } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
 import { AIProvider } from "@/types";
 import { lookupPricing } from "@/lib/ai";
@@ -10,69 +10,129 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_OPTIONS: { value: AIProvider; label: string; defaultModel: string; defaultBaseUrl: string; descKey: string }[] = [
-  { value: 'gemini', label: 'Gemini', defaultModel: 'gemini-3.1-pro-preview', defaultBaseUrl: 'https://generativelanguage.googleapis.com', descKey: 'settings.descGemini' },
-  { value: 'claude', label: 'Claude', defaultModel: 'claude-sonnet-4.6', defaultBaseUrl: 'https://api.anthropic.com', descKey: 'settings.descClaude' },
-  { value: 'openai', label: 'OpenAI', defaultModel: 'gpt-5.4', defaultBaseUrl: 'https://api.openai.com/v1', descKey: 'settings.descOpenai' },
+interface ProviderOption {
+  value: AIProvider;
+  label: string;
+  defaultModel: string;
+  defaultBaseUrl: string;
+  description: string;
+  descZh: string;
+  cachingInfo?: string;
+  cachingInfoZh?: string;
+  info?: string;
+  infoZh?: string;
+}
+
+const PROVIDER_OPTIONS: ProviderOption[] = [
+  {
+    value: 'claude',
+    label: 'Claude',
+    defaultModel: 'claude-sonnet-4.6',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    description: 'Anthropic native API',
+    descZh: 'Anthropic 原生 API',
+    cachingInfo: 'Claude requires explicit cache_control markers (auto-configured). Cache reads cost 0.1x input price.',
+    cachingInfoZh: 'Claude 需要显式 cache_control 标记（已自动设置）。缓存读取费用为输入价格的 0.1 倍。',
+  },
+  {
+    value: 'gemini',
+    label: 'Gemini',
+    defaultModel: 'gemini-3.1-pro-preview',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com',
+    description: 'Google Gemini native API',
+    descZh: 'Google Gemini 原生 API',
+    cachingInfo: 'Gemini caches automatically -- repeated identical prefixes are cached with no extra setup.',
+    cachingInfoZh: 'Gemini 自动缓存——重复的相同前缀会被自动缓存，无需额外设置。',
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI',
+    defaultModel: 'gpt-5.4',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    description: 'OpenAI API and compatible providers',
+    descZh: 'OpenAI API 及兼容服务商',
+    cachingInfo: 'OpenAI caches automatically for prompts >= 1024 tokens. Cached tokens get ~50% discount.',
+    cachingInfoZh: 'OpenAI 对 >= 1024 token 的提示自动缓存。缓存 token 享受约 50% 折扣。',
+  },
+  {
+    value: 'kimi',
+    label: 'Kimi Coding',
+    defaultModel: 'kimi-k2.5',
+    defaultBaseUrl: 'https://api.kimi.com/coding/v1',
+    description: 'Moonshot Kimi coding plan',
+    descZh: 'Moonshot Kimi 编程套餐',
+    info: 'This entry uses the Kimi Coding Plan endpoint. Subscribe at kimi.com/code to get an API key. For direct Kimi API access (pay-as-you-go), use the OpenAI entry with base URL https://api.moonshot.cn/v1 instead.',
+    infoZh: '此入口使用 Kimi 编程套餐端点。请在 kimi.com/code 订阅获取 API 密钥。如需使用 Kimi 直接 API（按量付费），请使用 OpenAI 入口并将 Base URL 设为 https://api.moonshot.cn/v1。',
+  },
+  {
+    value: 'zhipu',
+    label: 'GLM Coding',
+    defaultModel: 'GLM-5',
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    description: 'Zhipu GLM coding plan',
+    descZh: '智谱 GLM 编程套餐',
+    info: 'This entry uses the Zhipu GLM Coding Plan. Subscribe at open.bigmodel.cn to get an API key. For direct Zhipu API access (pay-as-you-go), use the OpenAI entry with the same base URL.',
+    infoZh: '此入口使用智谱 GLM 编程套餐。请在 open.bigmodel.cn 订阅获取 API 密钥。如需使用智谱直接 API（按量付费），请使用 OpenAI 入口并填入相同的 Base URL。',
+  },
+  {
+    value: 'qwen',
+    label: 'Qwen Coding',
+    defaultModel: 'qwen3.5-plus',
+    defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    description: 'Alibaba Qwen coding plan',
+    descZh: '阿里通义千问编程套餐',
+    info: 'This entry uses the Alibaba Qwen Coding Plan. Subscribe at dashscope.aliyuncs.com to get an API key. For direct Qwen API access (pay-as-you-go), use the OpenAI entry with the same base URL.',
+    infoZh: '此入口使用阿里通义千问编程套餐。请在 dashscope.aliyuncs.com 订阅获取 API 密钥。如需使用千问直接 API（按量付费），请使用 OpenAI 入口并填入相同的 Base URL。',
+  },
 ];
 
+// Per-provider credentials stored in memory while modal is open
+type ProviderConfigs = Record<string, { apiKey: string; model: string; baseUrl: string }>;
+
 export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-  const [provider, setProvider] = useState<AIProvider>('gemini');
-  const [apiKey, setApiKey] = useState("");
-  const [hasStoredApiKey, setHasStoredApiKey] = useState(false);
-  const [modelName, setModelName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [activeProvider, setActiveProvider] = useState<AIProvider>('gemini');
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>('gemini');
+  const [providerConfigs, setProviderConfigs] = useState<ProviderConfigs>({});
   const [showApiKey, setShowApiKey] = useState(false);
   const [priceInput, setPriceInput] = useState("");
   const [priceCached, setPriceCached] = useState("");
   const [priceOutput, setPriceOutput] = useState("");
   const [saveStatus, setSaveStatus] = useState<'success' | 'error' | null>(null);
-  const { t } = useLanguage();
+  const [pricingData, setPricingData] = useState<{ models: Record<string, any>; custom: Record<string, any> } | null>(null);
+  const { t, language } = useLanguage();
 
   useEffect(() => {
     if (isOpen) {
       setSaveStatus(null);
-      setPriceInput("");
-      setPriceCached("");
-      setPriceOutput("");
+      setShowApiKey(false);
       fetchJson<any>('/api/settings', undefined, 'Failed to load settings')
         .then(data => {
-          setProvider(data.provider || 'gemini');
-          setApiKey('');
-          setHasStoredApiKey(Boolean(data.hasApiKey));
-          setModelName(data.model || '');
-          setBaseUrl(data.baseUrl || '');
+          const active = data.activeProvider || 'gemini';
+          setActiveProvider(active);
+          setSelectedProvider(active);
+          setProviderConfigs(data.providers || {});
         })
         .catch(() => {
-          setProvider('gemini');
-          setApiKey('');
-          setHasStoredApiKey(false);
-          setModelName('');
-          setBaseUrl('');
+          setActiveProvider('gemini');
+          setSelectedProvider('gemini');
+          setProviderConfigs({});
         });
-      // Load custom pricing for current model
       fetchJson<any>('/api/pricing', undefined, 'Failed to load pricing')
-        .then(data => {
-          // Will be updated when model name changes via the other effect
-          setPricingData(data);
-        })
+        .then(data => setPricingData(data))
         .catch(() => {});
     }
   }, [isOpen]);
 
-  const [pricingData, setPricingData] = useState<{ models: Record<string, any>; custom: Record<string, any> } | null>(null);
+  const providerOpt = PROVIDER_OPTIONS.find(p => p.value === selectedProvider) || PROVIDER_OPTIONS[0];
+  const currentCfg = providerConfigs[selectedProvider] || { apiKey: '', model: '', baseUrl: '' };
 
-  const selectedProvider = PROVIDER_OPTIONS.find(p => p.value === provider)!;
-
-  // Resolve the effective model name for pricing lookup
-  const effectiveModel = modelName.trim() || selectedProvider.defaultModel;
+  const effectiveModel = currentCfg.model.trim() || providerOpt.defaultModel;
   const defaultPricing = pricingData
     ? (pricingData.models?.[effectiveModel] ||
        Object.entries(pricingData.models || {}).find(([k]) => effectiveModel.includes(k))?.[1])
     : lookupPricing(effectiveModel);
   const customPricing = pricingData?.custom?.[effectiveModel];
 
-  // Load custom pricing values when model changes
   useEffect(() => {
     if (customPricing) {
       setPriceInput(String(customPricing.input));
@@ -87,28 +147,36 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   if (!isOpen) return null;
 
-  const handleProviderChange = (newProvider: AIProvider) => {
-    setProvider(newProvider);
-    setModelName("");
-    setBaseUrl("");
+  const updateCurrentConfig = (field: 'apiKey' | 'model' | 'baseUrl', value: string) => {
+    setProviderConfigs(prev => ({
+      ...prev,
+      [selectedProvider]: {
+        ...prev[selectedProvider] || { apiKey: '', model: '', baseUrl: '' },
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleProviderSelect = (p: AIProvider) => {
+    setSelectedProvider(p);
+    setShowApiKey(false);
+    setSaveStatus(null);
   };
 
   const handleSave = async () => {
     try {
-      const settings = {
-        provider,
-        model: modelName.trim(),
-        baseUrl: baseUrl.trim(),
-        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-      };
-      const res = await fetchOk('/api/settings', {
+      const cfg = providerConfigs[selectedProvider] || { apiKey: '', model: '', baseUrl: '' };
+      await fetchOk('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          activeProvider,
+          provider: selectedProvider,
+          apiKey: cfg.apiKey,
+          model: cfg.model,
+          baseUrl: cfg.baseUrl,
+        }),
       }, 'Failed to save settings');
-      const data = await res.json();
-      setHasStoredApiKey(Boolean(data.hasApiKey));
-      setApiKey('');
 
       // Save custom pricing if any field is filled
       if (priceInput || priceCached || priceOutput) {
@@ -132,13 +200,16 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }
   };
 
+  const isZh = language === 'zh';
+  const hasKey = Boolean(currentCfg.apiKey);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-[#1c1c1e] border border-[#2e2e30] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-[#1c1c1e] border border-[#2e2e30] rounded-2xl w-full max-w-[720px] shadow-2xl overflow-hidden flex flex-col" style={{ height: 'min(580px, 90vh)' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-[#2e2e30]">
-          <h2 className="text-xl font-bold text-white">{t('settings.title')}</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#2e2e30] shrink-0">
+          <h2 className="text-lg font-bold text-white">{t('settings.title')}</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-white transition-colors p-1 hover:bg-white/10 rounded-lg"
@@ -147,180 +218,193 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           </button>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+        {/* Body: Left sidebar + Right detail */}
+        <div className="flex flex-1 min-h-0">
 
-          {/* Provider Selection */}
-          <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-              <Cpu size={14} /> {t('settings.provider')}
-            </h3>
-            <div className="grid grid-cols-3 gap-2">
-              {PROVIDER_OPTIONS.map(opt => (
+          {/* Left: Provider list */}
+          <div className="w-[180px] border-r border-[#2e2e30] overflow-y-auto custom-scrollbar shrink-0 py-2">
+            {PROVIDER_OPTIONS.map(opt => {
+              const cfg = providerConfigs[opt.value];
+              const configured = Boolean(cfg?.apiKey);
+              return (
                 <button
                   key={opt.value}
-                  onClick={() => handleProviderChange(opt.value)}
-                  className={`px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
-                    provider === opt.value
-                      ? 'bg-blue-600/20 border-blue-500 text-blue-400'
-                      : 'bg-black/20 border-[#2e2e30] text-gray-400 hover:border-gray-600'
+                  onClick={() => handleProviderSelect(opt.value)}
+                  className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between gap-2 ${
+                    selectedProvider === opt.value
+                      ? 'bg-blue-600/15 text-blue-400 border-r-2 border-blue-500'
+                      : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
                   }`}
                 >
-                  {opt.label}
+                  <span className="truncate">{opt.label}</span>
+                  {configured && (
+                    <CircleDot size={10} className="text-green-500 shrink-0" />
+                  )}
                 </button>
-              ))}
-            </div>
-            <p className="text-xs text-gray-500">
-              {t(selectedProvider.descKey as any)}
-            </p>
-          </section>
+              );
+            })}
+          </div>
 
-          {/* API Configuration */}
-          <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-              <Key size={14} /> {t('settings.apiConfiguration')}
-            </h3>
+          {/* Right: Detail panel */}
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-5">
 
-            {/* Base URL */}
-            <div className="space-y-2">
-              <label className="block text-sm text-gray-300 flex items-center gap-2">
-                <Globe size={14} /> {t('settings.baseUrl')}
-              </label>
-              <input
-                type="text"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder={selectedProvider.defaultBaseUrl}
-              />
-              <p className="text-xs text-gray-500">
-                {t('settings.modelNameHint')} {selectedProvider.defaultBaseUrl}
+            {/* Provider header */}
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold text-white">{providerOpt.label}</h3>
+                {providerOpt.info && (
+                  <div className="relative group">
+                    <Info size={14} className="text-gray-500 cursor-help" />
+                    <div className="absolute top-full left-0 mt-1 w-72 p-3 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-20 shadow-xl">
+                      {isZh ? providerOpt.infoZh : providerOpt.info}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                {isZh ? providerOpt.descZh : providerOpt.description}
               </p>
             </div>
 
             {/* API Key */}
-            <div className="space-y-2">
-              <label className="block text-sm text-gray-300">{t('settings.apiKey')}</label>
+            <div className="space-y-1.5">
+              <label className="block text-sm text-gray-300 flex items-center gap-2">
+                <Key size={14} /> {t('settings.apiKey')}
+              </label>
               <div className="relative">
                 <input
                   type={showApiKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors pr-10"
-                  placeholder={hasStoredApiKey ? t('settings.apiKeyStoredPlaceholder') : "sk-..."}
+                  value={currentCfg.apiKey}
+                  onChange={(e) => updateCurrentConfig('apiKey', e.target.value)}
+                  className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors pr-10 text-sm"
+                  placeholder="sk-..."
                 />
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
                 >
-                  {showApiKey ? <EyeOff size={18} /> : <Eye size={18} />}
+                  {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-              <p className="text-xs text-gray-500">
-                {hasStoredApiKey ? t('settings.apiKeyStoredHint') : t('settings.apiKeyNewHint')}
-              </p>
+              {hasKey && (
+                <p className="text-xs text-green-500/70">
+                  {isZh ? '已配置' : 'Configured'}
+                </p>
+              )}
             </div>
 
             {/* Model Name */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <label className="block text-sm text-gray-300 flex items-center gap-2">
                 <Cpu size={14} /> {t('settings.modelName')}
               </label>
               <input
                 type="text"
-                value={modelName}
-                onChange={(e) => setModelName(e.target.value)}
-                className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder={selectedProvider.defaultModel}
+                value={currentCfg.model}
+                onChange={(e) => updateCurrentConfig('model', e.target.value)}
+                className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                placeholder={providerOpt.defaultModel}
               />
               <p className="text-xs text-gray-500">
-                {t('settings.modelNameHint')} {selectedProvider.defaultModel}
+                {isZh ? '留空使用默认：' : 'Default:'} {providerOpt.defaultModel}
               </p>
             </div>
-          </section>
 
-          {/* Pricing */}
-          <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-              <DollarSign size={14} /> {t('settings.pricing')}
-            </h3>
-            <p className="text-xs text-gray-500">{t('settings.pricingHint')}</p>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <label className="block text-xs text-gray-400">{t('settings.priceInput')}</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={priceInput}
-                  onChange={(e) => setPriceInput(e.target.value)}
-                  className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
-                  placeholder={defaultPricing ? String(defaultPricing.input) : "2.00"}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="block text-xs text-gray-400">{t('settings.priceCached')}</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={priceCached}
-                  onChange={(e) => setPriceCached(e.target.value)}
-                  className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
-                  placeholder={defaultPricing ? String(defaultPricing.cached) : "0.50"}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="block text-xs text-gray-400">{t('settings.priceOutput')}</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={priceOutput}
-                  onChange={(e) => setPriceOutput(e.target.value)}
-                  className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
-                  placeholder={defaultPricing ? String(defaultPricing.output) : "8.00"}
-                />
+            {/* Base URL */}
+            <div className="space-y-1.5">
+              <label className="block text-sm text-gray-300 flex items-center gap-2">
+                <Globe size={14} /> {t('settings.baseUrl')}
+              </label>
+              <input
+                type="text"
+                value={currentCfg.baseUrl}
+                onChange={(e) => updateCurrentConfig('baseUrl', e.target.value)}
+                className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 transition-colors text-sm"
+                placeholder={providerOpt.defaultBaseUrl}
+              />
+              <p className="text-xs text-gray-500">
+                {isZh ? '留空使用默认：' : 'Default:'} {providerOpt.defaultBaseUrl}
+              </p>
+            </div>
+
+            {/* Pricing */}
+            <div className="space-y-2">
+              <label className="block text-sm text-gray-300 flex items-center gap-2">
+                <DollarSign size={14} /> {t('settings.pricing')}
+              </label>
+              <p className="text-xs text-gray-500">{t('settings.pricingHint')}</p>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-500">{t('settings.priceInput')}</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={priceInput}
+                    onChange={(e) => setPriceInput(e.target.value)}
+                    className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder={defaultPricing ? String(defaultPricing.input) : "2.00"}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-500">{t('settings.priceCached')}</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={priceCached}
+                    onChange={(e) => setPriceCached(e.target.value)}
+                    className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder={defaultPricing ? String(defaultPricing.cached) : "0.50"}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-xs text-gray-500">{t('settings.priceOutput')}</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={priceOutput}
+                    onChange={(e) => setPriceOutput(e.target.value)}
+                    className="w-full bg-black/30 border border-[#2e2e30] rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder={defaultPricing ? String(defaultPricing.output) : "8.00"}
+                  />
+                </div>
               </div>
             </div>
-          </section>
 
-          <hr className="border-[#2e2e30]" />
+            {/* Caching info */}
+            {providerOpt.cachingInfo && (
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
+                <p className="text-xs text-blue-300/80 leading-relaxed">
+                  {isZh ? providerOpt.cachingInfoZh : providerOpt.cachingInfo}
+                </p>
+              </div>
+            )}
 
-          {/* Save Button */}
-          <button
-            onClick={handleSave}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            {t('common.save')}
-          </button>
+            {/* Save Button */}
+            <div className="pt-1">
+              <button
+                onClick={handleSave}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 text-sm"
+              >
+                {t('common.save')}
+              </button>
 
-          {saveStatus === 'success' && (
-            <p className="text-green-500 text-sm flex items-center gap-1 justify-center">
-              <Check size={14}/> {t('settings.savedSuccess')}
-            </p>
-          )}
-          {saveStatus === 'error' && (
-            <p className="text-red-500 text-sm flex items-center gap-1 justify-center">
-              <AlertCircle size={14}/> {t('settings.savedError')}
-            </p>
-          )}
+              {saveStatus === 'success' && (
+                <p className="text-green-500 text-xs flex items-center gap-1 justify-center mt-2">
+                  <Check size={12}/> {t('settings.savedSuccess')}
+                </p>
+              )}
+              {saveStatus === 'error' && (
+                <p className="text-red-500 text-xs flex items-center gap-1 justify-center mt-2">
+                  <AlertCircle size={12}/> {t('settings.savedError')}
+                </p>
+              )}
+            </div>
 
-          {/* Caching Info */}
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-2">
-            <p className="text-xs text-blue-300 font-medium">{t('settings.promptCaching')}</p>
-            <p className="text-xs text-blue-300/80 leading-relaxed">
-              {provider === 'claude'
-                ? t('settings.cachingClaude')
-                : provider === 'gemini'
-                ? t('settings.cachingGemini')
-                : t('settings.cachingOpenai')
-              }
-            </p>
           </div>
-
-
         </div>
       </div>
     </div>

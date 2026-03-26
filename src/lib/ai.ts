@@ -252,27 +252,50 @@ function isNativeOpenAIBaseUrl(baseUrl: string): boolean {
   }
 }
 
-export async function loadConfig(): Promise<AIConfig> {
+// Cached settings in the new per-provider format
+let _cachedSettings: { activeProvider: AIProvider; providers: Record<string, { apiKey: string; model: string; baseUrl: string }> } | null = null;
+
+export async function loadSettings(): Promise<typeof _cachedSettings> {
   try {
     const res = await fetch('/api/settings');
     const data = await res.json();
-    _cachedConfig = {
-      provider: data.provider || 'gemini',
-      apiKey: '',
-      model: data.model || '',
-      baseUrl: data.baseUrl || '',
-      hasStoredApiKey: Boolean(data.hasApiKey),
+    _cachedSettings = {
+      activeProvider: data.activeProvider || 'gemini',
+      providers: data.providers || {},
     };
   } catch {
-    _cachedConfig = { provider: 'gemini', apiKey: '', model: '', baseUrl: '', hasStoredApiKey: false };
+    _cachedSettings = { activeProvider: 'gemini', providers: {} };
   }
-  // Also load pricing data
   await loadPricing();
+  return _cachedSettings;
+}
+
+export function getCachedSettings() {
+  return _cachedSettings;
+}
+
+export function getConfiguredProviders(): AIProvider[] {
+  if (!_cachedSettings) return [];
+  return Object.entries(_cachedSettings.providers)
+    .filter(([, cfg]) => Boolean(cfg.apiKey))
+    .map(([key]) => key as AIProvider);
+}
+
+export async function loadConfig(providerOverride?: AIProvider): Promise<AIConfig> {
+  const settings = _cachedSettings || (await loadSettings())!;
+  const provider = providerOverride || settings.activeProvider;
+  const cfg = settings.providers[provider] || { apiKey: '', model: '', baseUrl: '' };
+  _cachedConfig = {
+    provider,
+    apiKey: '',
+    model: cfg.model || '',
+    baseUrl: cfg.baseUrl || '',
+    hasStoredApiKey: Boolean(cfg.apiKey),
+  };
   return _cachedConfig;
 }
 
 export function getConfig(): AIConfig {
-  // Return cached config if available, otherwise defaults
   return _cachedConfig || { provider: 'gemini', apiKey: '', model: '', baseUrl: '', hasStoredApiKey: false };
 }
 
@@ -281,6 +304,10 @@ function getDefaultModel(provider: AIProvider): string {
     case 'gemini': return 'gemini-3.1-pro-preview';
     case 'claude': return 'claude-sonnet-4.6';
     case 'openai': return 'gpt-5.4';
+    case 'kimi': return 'kimi-k2.5';
+    case 'zhipu': return 'GLM-5';
+    case 'qwen': return 'qwen3.5-plus';
+    default: return 'gpt-5.4';
   }
 }
 
@@ -433,9 +460,10 @@ export const generateSlides = async (
   currentSlides?: string | null,
   files?: LocalFile[],
   conversationSummary: string = '',
-  inlineAttachments?: import("@/types").ChatAttachment[]
+  inlineAttachments?: import("@/types").ChatAttachment[],
+  providerOverride?: AIProvider
 ): Promise<GenerateSlidesResponse> => {
-  const config = await loadConfig();
+  const config = await loadConfig(providerOverride);
   const model = config.model || getDefaultModel(config.provider);
 
   if (!config.apiKey && !config.hasStoredApiKey) {

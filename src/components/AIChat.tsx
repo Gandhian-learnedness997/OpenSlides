@@ -1,25 +1,75 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, User, Plus, Info, X, Paperclip, Image as ImageIcon, FileText } from "lucide-react";
+import { Send, Bot, User, Plus, Info, X, Paperclip, Image as ImageIcon, FileText, ChevronDown } from "lucide-react";
 import { useLanguage } from "../hooks/useLanguage";
-import { ChatMessage, ChatAttachment } from "@/types";
+import { ChatMessage, ChatAttachment, AIProvider } from "@/types";
+import { loadSettings, getConfiguredProviders, getCachedSettings } from "@/lib/ai";
 
 interface AIChatProps {
-  onGenerate: (prompt: string, includeSlides: boolean, attachments?: ChatAttachment[]) => Promise<any>;
+  onGenerate: (prompt: string, includeSlides: boolean, attachments?: ChatAttachment[], providerOverride?: AIProvider) => Promise<any>;
   isGenerating: boolean;
   chatHistoryRef: React.MutableRefObject<ChatMessage[]>;
   loadedHistory: ChatMessage[] | null;
   onNewChat: () => Promise<void>;
   isCreatingNewChat: boolean;
+  pendingMessage?: string | null;
+  onPendingMessageConsumed?: () => void;
 }
 
-export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat }: AIChatProps) {
+const PROVIDER_LABELS: Record<AIProvider, string> = {
+  claude: 'Claude',
+  gemini: 'Gemini',
+  openai: 'OpenAI',
+  kimi: 'Kimi Coding',
+  zhipu: 'GLM Coding',
+  qwen: 'Qwen Coding',
+};
+
+export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat, pendingMessage, onPendingMessageConsumed }: AIChatProps) {
   const [message, setMessage] = useState<string>("");
   const [includeSlides, setIncludeSlides] = useState(true);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider | null>(null);
+  const [configuredProviders, setConfiguredProviders] = useState<AIProvider[]>([]);
+  const [showProviderDropdown, setShowProviderDropdown] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const dropZoneRef = useRef<HTMLFormElement | null>(null);
+  const providerDropdownRef = useRef<HTMLDivElement | null>(null);
   const { t } = useLanguage();
+
+  // Load configured providers on mount and refresh periodically
+  const refreshProviders = useCallback(() => {
+    loadSettings().then(() => {
+      const configured = getConfiguredProviders();
+      setConfiguredProviders(configured);
+      const settings = getCachedSettings();
+      if (settings && !selectedProvider) {
+        setSelectedProvider(settings.activeProvider);
+      }
+    });
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    refreshProviders();
+  }, []);
+
+  // Refresh provider list when dropdown is opened (catches settings changes)
+  useEffect(() => {
+    if (showProviderDropdown) {
+      refreshProviders();
+    }
+  }, [showProviderDropdown, refreshProviders]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (providerDropdownRef.current && !providerDropdownRef.current.contains(e.target as Node)) {
+        setShowProviderDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml', 'application/pdf'];
 
@@ -102,24 +152,15 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
       }
   };
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!message.trim() && attachments.length === 0) || isGenerating) return;
-
+  const sendMessage = async (userMessage: string, currentAttachments?: ChatAttachment[]) => {
     // Add user message with attachments
-    const userMessage = message;
-    const currentAttachments = attachments.length > 0 ? [...attachments] : undefined;
     const newHistory: ChatMessage[] = [...chatHistory, { role: "user", content: userMessage, attachments: currentAttachments }];
     setChatHistory(newHistory);
-    setMessage("");
-    setAttachments([]);
 
     if (onGenerate) {
       try {
-        // Trigger generation with user prompt and attachments
-        const response: any = await onGenerate(userMessage, includeSlides, currentAttachments);
+        const response: any = await onGenerate(userMessage, includeSlides, currentAttachments, selectedProvider || undefined);
 
-        // Handle both string response (old behavior) and object response (new behavior with usage)
         let displayText: string = response;
         let usage = null;
 
@@ -153,6 +194,25 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
     }
   };
 
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!message.trim() && attachments.length === 0) || isGenerating) return;
+
+    const userMessage = message;
+    const currentAttachments = attachments.length > 0 ? [...attachments] : undefined;
+    setMessage("");
+    setAttachments([]);
+    await sendMessage(userMessage, currentAttachments);
+  };
+
+  // Handle programmatic messages from parent (e.g. fix overflow)
+  useEffect(() => {
+    if (pendingMessage && !isGenerating) {
+      onPendingMessageConsumed?.();
+      sendMessage(pendingMessage);
+    }
+  }, [pendingMessage]);
+
   const scrollToBottom = () => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -169,6 +229,21 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
     let displayContent = content.replace(/```html[\s\S]*?```/gi, "\n[display in the preview]\n");
     // Also replace raw html tags just in case old history format
     displayContent = displayContent.replace(/<html>[\s\S]*?<\/html>/gi, "\n[display in the preview]\n");
+
+    // Split out the "Displayed in the editor" badge
+    const editorBadge = /\n*📄 \[Displayed in the editor\]\s*$/;
+    const hasBadge = editorBadge.test(displayContent);
+    if (hasBadge) {
+      const text = displayContent.replace(editorBadge, '').trim();
+      return (
+        <>
+          {text && <span>{text}</span>}
+          <span className="inline-flex items-center gap-1 mt-2 px-2 py-1 rounded-md bg-blue-500/15 text-blue-400 text-[11px] font-medium border border-blue-500/20">
+            📄 Displayed in the editor
+          </span>
+        </>
+      );
+    }
     return displayContent;
   };
 
@@ -352,6 +427,42 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
         />
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2">
+            {/* Provider selector */}
+            <div ref={providerDropdownRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setShowProviderDropdown(!showProviderDropdown)}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors border border-transparent hover:border-gray-700"
+              >
+                <span className="truncate max-w-[72px]">{selectedProvider ? PROVIDER_LABELS[selectedProvider] : 'Select'}</span>
+                <ChevronDown size={12} />
+              </button>
+              {showProviderDropdown && (
+                <div className="absolute bottom-full left-0 mb-1 w-36 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto custom-scrollbar">
+                  {configuredProviders.map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => { setSelectedProvider(p); setShowProviderDropdown(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${
+                        selectedProvider === p
+                          ? 'bg-blue-600/20 text-blue-400'
+                          : 'text-gray-300 hover:bg-white/5'
+                      }`}
+                    >
+                      {PROVIDER_LABELS[p]}
+                    </button>
+                  ))}
+                  {configuredProviders.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-gray-500">No providers configured</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="w-px h-4 bg-gray-700" />
+
+            {/* Include slides toggle */}
             <button
               type="button"
               onClick={() => setIncludeSlides(!includeSlides)}

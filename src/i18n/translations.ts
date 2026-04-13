@@ -48,6 +48,7 @@ export const translations = {
     fileManager: {
       sources: "Sources",
       addSources: "Add Sources",
+      dropFilesToUpload: "Drop files to upload them as sources",
       uploading: "Uploading...",
       noSources: "No sources yet.",
       fileType: "FILE",
@@ -241,6 +242,7 @@ export const translations = {
     fileManager: {
       sources: "资源文件",
       addSources: "添加资源",
+      dropFilesToUpload: "松开即可上传为资源文件",
       uploading: "上传中...",
       noSources: "暂无资源",
       fileType: "文件",

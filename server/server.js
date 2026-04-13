@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { PDFParse } from 'pdf-parse';
 import XLSX from 'xlsx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,8 @@ const PRICING_PATH = path.join(ROOT_DIR, 'config', 'pricing.json');
 const SAFE_PROJECT_ID_REGEX = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const STATE_ID_REGEX = /^(?:state|auto)_\d+$/;
 const ASSETS_DIRNAME = 'assets';
+const PDF_IMAGE_RENDER_SCALE = Number(process.env.PDF_IMAGE_RENDER_SCALE || 1.5);
+const PDF_IMAGE_RENDER_LIMIT = Number(process.env.PDF_IMAGE_RENDER_LIMIT || 24);
 
 
 // Ensure projects directory exists
@@ -514,6 +517,103 @@ function isNativeOpenAIBaseUrl(baseUrl) {
   }
 }
 
+function shouldConvertPdfToImagesForOpenAICompatible(provider, baseUrl) {
+  if (provider === 'claude' || provider === 'gemini') return false;
+  if (provider === 'openai' && isNativeOpenAIBaseUrl(baseUrl)) return false;
+  return true;
+}
+
+function getBase64FromDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') return '';
+  return dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+}
+
+async function renderPdfBase64ToPngFiles(base64Data, namePrefix = 'document') {
+  if (!base64Data) return [];
+
+  const parser = new PDFParse({ data: Buffer.from(base64Data, 'base64') });
+  try {
+    const screenshot = await parser.getScreenshot({
+      scale: PDF_IMAGE_RENDER_SCALE,
+      first: 1,
+      last: PDF_IMAGE_RENDER_LIMIT,
+    });
+
+    return (screenshot.pages || [])
+      .filter((page) => page?.data)
+      .map((page, index) => {
+        const buffer = Buffer.from(page.data);
+        return {
+          name: `${namePrefix} page ${index + 1}.png`,
+          mimeType: 'image/png',
+          size: buffer.length,
+          dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+          data: buffer.toString('base64'),
+        };
+      });
+  } finally {
+    parser.destroy();
+  }
+}
+
+async function convertProjectPdfsToImagesForOpenAICompatible(files) {
+  if (!Array.isArray(files) || files.length === 0) return files;
+
+  const converted = [];
+  for (const file of files) {
+    if (file.mimeType !== 'application/pdf') {
+      converted.push(file);
+      continue;
+    }
+
+    try {
+      const pageImages = await renderPdfBase64ToPngFiles(getBase64FromDataUrl(file.dataUrl), file.name || 'document');
+      converted.push(...pageImages);
+      console.log(`  [pdf-image] ${file.name || 'PDF'}: rendered ${pageImages.length} page image(s)`);
+    } catch (error) {
+      console.warn(`  [pdf-image] Failed to render ${file.name || 'PDF'}: ${error.message}`);
+    }
+  }
+
+  return converted;
+}
+
+async function convertInlinePdfsToImagesForOpenAICompatible(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+  const convertedMessages = [];
+  for (const msg of messages) {
+    if (!Array.isArray(msg.files) || msg.files.length === 0) {
+      convertedMessages.push(msg);
+      continue;
+    }
+
+    const convertedFiles = [];
+    for (const file of msg.files) {
+      if (file.mimeType !== 'application/pdf') {
+        convertedFiles.push(file);
+        continue;
+      }
+
+      try {
+        const pageImages = await renderPdfBase64ToPngFiles(file.data, file.name || 'attached PDF');
+        convertedFiles.push(...pageImages.map((page) => ({
+          name: page.name,
+          mimeType: page.mimeType,
+          data: page.data,
+        })));
+        console.log(`  [pdf-image] inline ${file.name || 'PDF'}: rendered ${pageImages.length} page image(s)`);
+      } catch (error) {
+        console.warn(`  [pdf-image] Failed to render inline ${file.name || 'PDF'}: ${error.message}`);
+      }
+    }
+
+    convertedMessages.push({ ...msg, files: convertedFiles });
+  }
+
+  return convertedMessages;
+}
+
 app.post('/api/generate', async (req, res) => {
   const settings = loadSettings();
   const provider = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
@@ -568,7 +668,13 @@ app.post('/api/generate', async (req, res) => {
     } else if (provider === 'openai' && isNativeOpenAIBaseUrl(base)) {
       result = await callOpenAINative(base, apiKey, model, projectId, system, messages, temperature, files);
     } else {
-      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, files, provider);
+      const compatibleFiles = shouldConvertPdfToImagesForOpenAICompatible(provider, base)
+        ? await convertProjectPdfsToImagesForOpenAICompatible(files)
+        : files;
+      const compatibleMessages = shouldConvertPdfToImagesForOpenAICompatible(provider, base)
+        ? await convertInlinePdfsToImagesForOpenAICompatible(messages)
+        : messages;
+      result = await callOpenAICompatible(base, apiKey, model, system, compatibleMessages, temperature, compatibleFiles, provider);
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const usage = result.usage || {};

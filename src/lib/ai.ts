@@ -619,7 +619,7 @@ export const planSearch = async (
     clearTimeout(timeoutId);
     if (!response.ok) {
       console.warn('[planSearch] /api/plan returned', response.status);
-      return { needsSearch: false, needsContext: true, queries: [], reasoning: 'Plan request failed' };
+      return { needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: 'Plan request failed' };
     }
     const plan = await response.json();
     console.log('[planSearch] Plan result:', plan);
@@ -628,7 +628,7 @@ export const planSearch = async (
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
       console.warn('[planSearch] /api/plan timed out after 120s');
-      return { needsSearch: false, needsContext: true, queries: [], reasoning: 'Plan request timed out' };
+      return { needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: 'Plan request timed out' };
     }
     throw err;
   }
@@ -662,6 +662,82 @@ export const formatSearchContext = (searchResult: SearchResult): string => {
 
   context += '[End of Search Results]';
   return context;
+};
+
+// ============================================================
+// Data Analytics Agent
+// ============================================================
+
+export const analyzeData = async (
+  projectId: string,
+  prompt: string,
+  providerOverride?: AIProvider,
+): Promise<import("@/types").AnalysisResult & { usage?: { inputTokens: number; outputTokens: number; cachedTokens: number; thinkingTokens: number } }> => {
+  const config = await loadConfig(providerOverride);
+  const model = config.model || getDefaultModel(config.provider);
+  console.log('[analyzeData] Started, projectId:', projectId, 'provider:', config.provider);
+
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      projectId,
+      prompt,
+      provider: config.provider,
+      model,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: 'Analysis failed' }));
+    console.warn('[analyzeData] failed:', err.error);
+    return { tables: [], charts: [], insights: [], error: err.error };
+  }
+
+  const result = await response.json();
+  console.log('[analyzeData] Result:', result.tables?.length, 'tables,', result.charts?.length, 'charts,', result.insights?.length, 'insights');
+  return result;
+};
+
+export const formatAnalysisContext = (analysis: import("@/types").AnalysisResult): string => {
+  if (!analysis || (analysis.tables.length === 0 && analysis.charts.length === 0 && analysis.insights.length === 0)) {
+    return '';
+  }
+
+  const parts: string[] = ['[Data Analysis Results]\nThe following analysis was performed on the uploaded data files. Use these results to create accurate, data-driven slides:\n'];
+
+  if (analysis.insights.length > 0) {
+    parts.push('KEY INSIGHTS:');
+    analysis.insights.forEach((insight, i) => parts.push(`${i + 1}. ${insight}`));
+    parts.push('');
+  }
+
+  if (analysis.charts.length > 0) {
+    parts.push('CHARTS TO RENDER (use Chart.js with the exact data below):');
+    for (const chart of analysis.charts) {
+      parts.push(`\nChart: "${chart.title}" (type: ${chart.type})`);
+      parts.push(`Labels: ${JSON.stringify(chart.labels)}`);
+      for (const ds of chart.datasets) {
+        parts.push(`Dataset "${ds.label}": ${JSON.stringify(ds.data)}`);
+      }
+    }
+    parts.push('');
+  }
+
+  if (analysis.tables.length > 0) {
+    parts.push('TABLES TO RENDER:');
+    for (const table of analysis.tables) {
+      parts.push(`\nTable: "${table.title}"`);
+      parts.push(`Headers: ${table.headers.join(' | ')}`);
+      for (const row of table.rows.slice(0, 10)) {
+        parts.push(row.join(' | '));
+      }
+    }
+    parts.push('');
+  }
+
+  parts.push('[End of Data Analysis]');
+  return parts.join('\n');
 };
 
 // ============================================================

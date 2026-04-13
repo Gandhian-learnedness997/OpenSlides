@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import FileManager from "./FileManager";
 import SlidePreview from "./SlidePreview";
 import AIChat from "./AIChat";
-import { generateSlides, planSearch, executeSearch, formatSearchContext, saveProjectContext, loadProjectContextFormatted, computePrice, loadConfig, getDefaultModel } from "../lib/ai";
+import { generateSlides, planSearch, executeSearch, formatSearchContext, analyzeData, formatAnalysisContext, saveProjectContext, loadProjectContextFormatted, computePrice, loadConfig, getDefaultModel } from "../lib/ai";
 import { useLanguage } from "../hooks/useLanguage";
 import { getSlideInfo, saveSlideInfo, saveState, loadStateContent, deleteState } from "../lib/versionControl";
 import { CheckCircle, AlertCircle } from "lucide-react";
@@ -158,7 +158,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     return filtered;
   };
 
-  const [searchStatus, setSearchStatus] = useState<'idle' | 'planning' | 'searching' | 'generating'>('idle');
+  const [searchStatus, setSearchStatus] = useState<'idle' | 'planning' | 'searching' | 'analyzing' | 'generating'>('idle');
 
   const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true, inlineAttachments?: import("@/types").ChatAttachment[], providerOverride?: import("@/types").AIProvider) => {
     setIsGenerating(true);
@@ -209,6 +209,39 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             try {
               persistedContext = await loadProjectContextFormatted(project.id);
             } catch { /* non-fatal */ }
+          }
+
+          // Data Analytics Agent — analyze uploaded data files if planner says so
+          if (plan.needsAnalysis) {
+            try {
+              setSearchStatus('analyzing');
+              const analysisResult = await analyzeData(project.id, userPrompt, providerOverride);
+              if (analysisResult.usage) {
+                extraInputTokens += analysisResult.usage.inputTokens || 0;
+                extraOutputTokens += analysisResult.usage.outputTokens || 0;
+                extraCachedTokens += analysisResult.usage.cachedTokens || 0;
+                extraThinkingTokens += analysisResult.usage.thinkingTokens || 0;
+              }
+              if (!analysisResult.error) {
+                const analysisContext = formatAnalysisContext(analysisResult);
+                if (analysisContext) {
+                  searchContext = searchContext
+                    ? searchContext + '\n\n' + analysisContext
+                    : analysisContext;
+                }
+                // Persist analysis as dataSummaries
+                try {
+                  const summaries = [
+                    ...analysisResult.insights.map((insight: string, i: number) => ({ label: `Insight ${i + 1}`, data: insight })),
+                    ...analysisResult.charts.map((c: any) => ({ label: `Chart: ${c.title}`, data: JSON.stringify(c) })),
+                    ...analysisResult.tables.map((t: any) => ({ label: `Table: ${t.title}`, data: JSON.stringify(t) })),
+                  ];
+                  await saveProjectContext(project.id, { dataSummaries: summaries });
+                } catch { /* non-fatal */ }
+              }
+            } catch (err) {
+              console.error('[handleGenerateSlides] Analytics agent error:', err);
+            }
           }
         } catch (err) {
           console.error('[handleGenerateSlides] Search agent error:', err);

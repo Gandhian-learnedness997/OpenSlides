@@ -13,7 +13,7 @@ interface AIChatProps {
   isCreatingNewChat: boolean;
   pendingMessage?: string | null;
   onPendingMessageConsumed?: () => void;
-  searchStatus?: 'idle' | 'planning' | 'searching' | 'generating';
+  searchStatus?: 'idle' | 'planning' | 'searching' | 'analyzing' | 'generating';
   projectProvider?: AIProvider | null;
   onProjectProviderChange?: (provider: AIProvider) => void;
 }
@@ -375,10 +375,11 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
               </div>
-              {isCreatingNewChat && <span className="ml-2 text-xs text-gray-400">Saving & Creating...</span>}
-              {!isCreatingNewChat && searchStatus === 'planning' && <span className="ml-2 text-xs text-gray-400">Planning search...</span>}
-              {!isCreatingNewChat && searchStatus === 'searching' && <span className="ml-2 text-xs text-emerald-400">Searching the web...</span>}
-              {!isCreatingNewChat && searchStatus === 'generating' && <span className="ml-2 text-xs text-gray-400">Generating slides...</span>}
+              {isCreatingNewChat && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusSaving')}</span>}
+              {!isCreatingNewChat && searchStatus === 'planning' && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusPlanning')}</span>}
+              {!isCreatingNewChat && searchStatus === 'searching' && <span className="ml-2 text-xs text-emerald-400">{t('aiChat.statusSearching')}</span>}
+              {!isCreatingNewChat && searchStatus === 'analyzing' && <span className="ml-2 text-xs text-purple-400">{t('aiChat.statusAnalyzing')}</span>}
+              {!isCreatingNewChat && searchStatus === 'generating' && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusGenerating')}</span>}
             </div>
           </div>
         )}

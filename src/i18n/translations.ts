@@ -127,6 +127,11 @@ export const translations = {
       includeSlidesOff: "AI follows the conversation history but ignores the current slides on screen",
       genericError: "Sorry, something went wrong while generating the slides.",
       noApiKey: "No API key configured. Please set your API key in Settings (gear icon, top right).",
+      statusSaving: "Saving & Creating...",
+      statusPlanning: "Planning search...",
+      statusSearching: "Searching the web...",
+      statusAnalyzing: "Analyzing data...",
+      statusGenerating: "Generating slides...",
     },
     settings: {
       title: "Settings",
@@ -315,6 +320,11 @@ export const translations = {
       includeSlidesOff: "AI 仅根据对话历史生成，忽略当前屏幕上的幻灯片",
       genericError: "抱歉，生成幻灯片时出错了。",
       noApiKey: "未配置 API 密钥。请在设置中（右上角齿轮图标）填写您的 API 密钥。",
+      statusSaving: "保存并创建中...",
+      statusPlanning: "规划搜索中...",
+      statusSearching: "正在搜索网络...",
+      statusAnalyzing: "正在分析数据...",
+      statusGenerating: "正在生成幻灯片...",
     },
     settings: {
       title: "设置",

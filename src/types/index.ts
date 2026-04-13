@@ -65,12 +65,13 @@ export interface ConversationContext {
 }
 
 // ============================================================
-// Search Agent Types
+// Search & Analytics Agent Types
 // ============================================================
 
 export interface SearchPlanResult {
   needsSearch: boolean;
   needsContext: boolean;
+  needsAnalysis: boolean;
   queries: string[];
   reasoning: string;
   usage?: {
@@ -91,6 +92,33 @@ export interface SearchResultItem {
 export interface SearchResult {
   results: SearchResultItem[];
   answer?: string;
+  error?: string;
+}
+
+export interface DataFileSchema {
+  fileName: string;
+  columns: string[];
+  rowCount: number;
+  sampleRows: Record<string, any>[];
+  fileSize: number;
+}
+
+export interface AnalysisResult {
+  tables: Array<{
+    title: string;
+    headers: string[];
+    rows: (string | number)[][];
+  }>;
+  charts: Array<{
+    title: string;
+    type: 'bar' | 'line' | 'pie' | 'doughnut' | 'radar';
+    labels: string[];
+    datasets: Array<{
+      label: string;
+      data: number[];
+    }>;
+  }>;
+  insights: string[];
   error?: string;
 }
 

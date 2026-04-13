@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { PDFParse } from 'pdf-parse';
+import XLSX from 'xlsx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -362,6 +362,47 @@ function loadProjectFilesForAI(projectId) {
   });
 }
 
+// ============================================================
+// Data Analytics Agent — Schema Extraction
+// ============================================================
+
+function isDataFile(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  return ['.csv', '.xlsx', '.xls'].includes(ext);
+}
+
+function getDataFileSchemas(projectId) {
+  const files = loadStoredProjectFiles(projectId);
+  const dataFiles = files.filter(f => isDataFile(f.name));
+  const schemas = [];
+
+  for (const file of dataFiles) {
+    try {
+      const filePath = getProjectAssetPath(projectId, file.assetPath);
+      const buffer = fs.readFileSync(filePath);
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+      if (jsonData.length === 0) continue;
+
+      schemas.push({
+        fileName: file.name,
+        assetPath: file.assetPath,
+        columns: Object.keys(jsonData[0]),
+        rowCount: jsonData.length,
+        sampleRows: jsonData.slice(0, 5),
+        fileSize: file.size,
+      });
+    } catch (err) {
+      console.warn(`  [schema] Failed to parse ${file.name}: ${err.message}`);
+    }
+  }
+
+  return schemas;
+}
+
 function loadSettings() {
   const settings = readJsonFile(SETTINGS_PATH, {});
   // Migrate legacy flat format to per-provider format
@@ -473,61 +514,6 @@ function isNativeOpenAIBaseUrl(baseUrl) {
   }
 }
 
-function needsPdfParsing(provider, baseUrl) {
-  if (provider === 'claude' || provider === 'gemini') return false;
-  if (provider === 'openai' && isNativeOpenAIBaseUrl(baseUrl)) return false;
-  return true;
-}
-
-async function parsePdfFiles(files) {
-  const result = [];
-  for (const file of files) {
-    if (file.mimeType === 'application/pdf') {
-      try {
-        const base64Data = file.dataUrl.replace(/^data:[^;]+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        const parser = new PDFParse({ data: buffer });
-
-        const textResult = await parser.getText();
-        const fullText = textResult.text || textResult.pages?.map(p => p.text).join('\n\n') || '';
-
-        // Add extracted text as a synthetic text file
-        result.push({
-          name: file.name,
-          mimeType: 'text/plain',
-          size: fullText.length,
-          dataUrl: `data:text/plain;base64,${Buffer.from(fullText).toString('base64')}`,
-          _parsedText: fullText,
-        });
-
-        // Extract images
-        const imgResult = await parser.getImage();
-        for (const page of imgResult.pages || []) {
-          for (const img of page.images || []) {
-            if (img.dataUrl) {
-              result.push({
-                name: `${file.name}_${img.name || 'img'}.png`,
-                mimeType: 'image/png',
-                size: img.data?.length || 0,
-                dataUrl: img.dataUrl,
-              });
-            }
-          }
-        }
-
-        console.log(`  [pdf-parse] ${file.name}: ${textResult.total} pages, ${fullText.length} chars, ${imgResult.pages?.reduce((n, p) => n + (p.images?.length || 0), 0) || 0} images`);
-        parser.destroy();
-      } catch (err) {
-        console.warn(`  [pdf-parse] Failed to parse ${file.name}: ${err.message}`);
-        // Skip the PDF if parsing fails
-      }
-    } else {
-      result.push(file);
-    }
-  }
-  return result;
-}
-
 app.post('/api/generate', async (req, res) => {
   const settings = loadSettings();
   const provider = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
@@ -572,14 +558,6 @@ app.post('/api/generate', async (req, res) => {
     return res.status(error.status || 400).json({ error: error.message || 'Invalid base URL' });
   }
 
-  // Parse PDFs for non-native providers that don't support direct PDF upload
-  let processedFiles = files;
-  if (needsPdfParsing(provider, base) && files.some(f => f.mimeType === 'application/pdf')) {
-    console.log(`  [pdf-parse] Parsing PDFs for non-native provider ${provider}...`);
-    processedFiles = await parsePdfFiles(files);
-    console.log(`  [pdf-parse] ${files.length} files → ${processedFiles.length} files after parsing`);
-  }
-
   const startTime = Date.now();
   try {
     let result;
@@ -590,7 +568,7 @@ app.post('/api/generate', async (req, res) => {
     } else if (provider === 'openai' && isNativeOpenAIBaseUrl(base)) {
       result = await callOpenAINative(base, apiKey, model, projectId, system, messages, temperature, files);
     } else {
-      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, processedFiles, provider);
+      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, files, provider);
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const usage = result.usage || {};
@@ -1437,12 +1415,6 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
           type: 'image_url',
           image_url: { url: f.dataUrl },
         });
-      } else if (f._parsedText) {
-        // Parsed PDF text — inject as text block
-        projectFileContent.push({
-          type: 'text',
-          text: `[Parsed content from ${f.name}]\n${f._parsedText}`,
-        });
       } else if (f.mimeType.startsWith('text/') || f.mimeType === 'application/json' || f.mimeType === 'application/xml') {
         // Plain text files — decode base64 and inject as text
         const base64 = f.dataUrl.replace(/^data:[^;]+;base64,/, '');
@@ -1475,28 +1447,6 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
             type: 'image_url',
             image_url: { url: `data:${f.mimeType};base64,${f.data}` },
           });
-        } else if (f.mimeType === 'application/pdf') {
-          // Parse inline PDF to text + images for compatible providers
-          try {
-            const buffer = Buffer.from(f.data, 'base64');
-            const parser = new PDFParse({ data: buffer });
-            const textResult = await parser.getText();
-            const fullText = textResult.text || textResult.pages?.map(p => p.text).join('\n\n') || '';
-            if (fullText) {
-              content.push({ type: 'text', text: `[Parsed content from ${f.name || 'file'}]\n${fullText}` });
-            }
-            const imgResult = await parser.getImage();
-            for (const page of imgResult.pages || []) {
-              for (const img of page.images || []) {
-                if (img.dataUrl) {
-                  content.push({ type: 'image_url', image_url: { url: img.dataUrl } });
-                }
-              }
-            }
-            parser.destroy();
-          } catch (err) {
-            console.warn(`[openai-compat] Failed to parse inline PDF ${f.name}: ${err.message}`);
-          }
         } else if (f.mimeType.startsWith('text/') || f.mimeType === 'application/json' || f.mimeType === 'application/xml') {
           const text = Buffer.from(f.data, 'base64').toString('utf-8');
           content.push({ type: 'text', text: `[Content from ${f.name || 'file'}]\n${text}` });
@@ -2178,14 +2128,16 @@ app.post('/api/search', async (req, res) => {
 // Planner Agent (decides if search is needed)
 // ============================================================
 
-const PLANNER_SYSTEM_PROMPT = `You are a planning assistant. Given a user's request to generate or edit a presentation, decide two things:
+const PLANNER_SYSTEM_PROMPT = `You are a planning assistant. Given a user's request to generate or edit a presentation, decide three things:
 1. Whether web search is needed to gather new information
 2. Whether existing project context (previous research, data summaries) should be included
+3. Whether data analysis is needed on uploaded data files (csv, xlsx)
 
 Return JSON only, no other text:
 {
   "needsSearch": true/false,
   "needsContext": true/false,
+  "needsAnalysis": true/false,
   "queries": ["query1", "query2"],
   "reasoning": "brief explanation"
 }
@@ -2212,6 +2164,17 @@ needsContext = false when:
 - The user's request is purely visual (styling, layout, colors, font sizes, animations)
 - The user is doing simple text edits that don't need factual backing
 - There is no existing context available
+
+needsAnalysis = true when:
+- The project has uploaded data files (csv, xlsx) AND
+- The user wants data-driven content: charts, statistics, trends, comparisons, summaries from the data
+- The user mentions analyzing, visualizing, or presenting their data
+
+needsAnalysis = false when:
+- There are no data files in the project
+- The user is doing visual/style edits only
+- The data has already been analyzed (existing context contains data summaries)
+- The user provides all content themselves and doesn't reference data files
 
 The user message may include "[Existing project context topics: ...]" listing topics already researched. Do NOT search for topics already covered unless the user explicitly asks for updated information. Only search for NEW topics not yet in the context.
 
@@ -2289,6 +2252,7 @@ app.post('/api/plan', async (req, res) => {
       const plan = {
         needsSearch: !!parsed.needsSearch,
         needsContext: parsed.needsContext !== false,
+        needsAnalysis: !!parsed.needsAnalysis,
         queries: Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
         reasoning: String(parsed.reasoning || ''),
         usage: {
@@ -2301,8 +2265,9 @@ app.post('/api/plan', async (req, res) => {
 
       console.log(`  \x1b[32m✓ Planned in ${elapsed}s\x1b[0m`);
       console.log(`  Decision:`);
-      console.log(`    needsSearch:  ${plan.needsSearch ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
-      console.log(`    needsContext: ${plan.needsContext ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsSearch:   ${plan.needsSearch ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsContext:  ${plan.needsContext ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsAnalysis: ${plan.needsAnalysis ? '\x1b[34myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
       if (plan.queries.length > 0) {
         console.log(`    queries:`);
         plan.queries.forEach((q, i) => console.log(`      ${i + 1}. "${q}"`));
@@ -2320,6 +2285,248 @@ app.post('/api/plan', async (req, res) => {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`  \x1b[31m✗ Planner failed after ${elapsed}s: ${error.message}\x1b[0m`);
     res.json({ needsSearch: false, queries: [], reasoning: error.message || 'Planning failed' });
+  }
+});
+
+// ============================================================
+// Data Analytics Agent
+// ============================================================
+
+const ANALYST_SYSTEM_PROMPT = `You are a data analyst. You will receive:
+1. Schema information about data files (column names, row count, sample rows)
+2. The user's request for what kind of presentation/analysis they want
+
+Your job: write a self-contained Python script that reads the data file(s) and outputs a JSON analysis result to stdout.
+
+RULES:
+- The script receives the file path as the first command-line argument (sys.argv[1]).
+- For .xlsx/.xls files, use openpyxl. For .csv files, use the csv module from stdlib.
+- The script MUST print ONLY a single JSON object to stdout. No other output.
+- The JSON output MUST follow this exact structure:
+
+{
+  "tables": [
+    {
+      "title": "Table Title",
+      "headers": ["Col1", "Col2", "Col3"],
+      "rows": [["val1", 2, "val3"], ...]
+    }
+  ],
+  "charts": [
+    {
+      "title": "Chart Title",
+      "type": "bar|line|pie|doughnut|radar",
+      "labels": ["Label1", "Label2", ...],
+      "datasets": [
+        {"label": "Series Name", "data": [1, 2, 3, ...]}
+      ]
+    }
+  ],
+  "insights": [
+    "Key finding 1",
+    "Key finding 2"
+  ]
+}
+
+GUIDELINES:
+- Produce 2-4 charts that best visualize the data for a presentation.
+- Produce 1-2 tables with the most important summary data (max 8 rows each).
+- Produce 3-5 key insights as short bullet-point strings.
+- For large datasets, aggregate and summarize — do NOT output all rows.
+- Choose chart types that match the data: bar for comparisons, line for trends over time, pie for proportions.
+- Keep labels short (truncate to ~20 chars if needed).
+- Limit chart data points to 12 max per dataset — group/aggregate if more.
+- Handle missing values gracefully (skip or fill with 0).
+- The script must be self-contained. Only use: openpyxl (for xlsx), csv (stdlib), json (stdlib), sys (stdlib), collections (stdlib), statistics (stdlib), datetime (stdlib).
+- Do NOT use pandas, numpy, matplotlib, or any other heavy library.
+- Output ONLY the JSON. No print statements for debugging. No stderr output.
+
+Output ONLY a python code block with the script. No explanation before or after.`;
+
+app.post('/api/analyze', async (req, res) => {
+  const settings = loadSettings();
+
+  console.log(`\n\x1b[34m━━━ [Analytics Agent] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
+
+  const projectId = typeof req.body.projectId === 'string' && isSafeProjectId(req.body.projectId)
+    ? req.body.projectId : null;
+  const userPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : '';
+  const providerName = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
+    ? req.body.provider : settings.activeProvider;
+
+  if (!projectId) {
+    console.log(`  \x1b[31m✗ No valid project ID\x1b[0m`);
+    return res.status(400).json({ error: 'Invalid project ID' });
+  }
+
+  // Step A: Extract schemas from data files
+  const schemas = getDataFileSchemas(projectId);
+  if (schemas.length === 0) {
+    console.log(`  \x1b[33m⊘ No data files found in project\x1b[0m`);
+    return res.json({ tables: [], charts: [], insights: [], error: 'No data files found' });
+  }
+
+  console.log(`  Project:     ${projectId}`);
+  console.log(`  Data files:  ${schemas.map(s => `${s.fileName} (${s.rowCount} rows, ${s.columns.length} cols)`).join(', ')}`);
+
+  const providerCfg = getProviderConfig(settings, providerName);
+  const apiKey = providerCfg.apiKey;
+  if (!apiKey) {
+    console.log(`  \x1b[31m✗ No API key for ${providerName}\x1b[0m`);
+    return res.status(400).json({ error: `No API key for ${providerName}` });
+  }
+
+  let base;
+  try {
+    base = sanitizeBaseUrl(providerCfg.baseUrl || '', providerName);
+  } catch {
+    return res.status(400).json({ error: 'Invalid base URL' });
+  }
+
+  const model = (typeof req.body.model === 'string' && req.body.model.trim())
+    ? req.body.model.trim()
+    : (providerCfg.model || getDefaultModel(providerName));
+
+  // Step B: Build prompt with schema info — LLM only sees structure, not full data
+  const schemaDescription = schemas.map(s => {
+    const sampleStr = JSON.stringify(s.sampleRows, null, 2);
+    return `File: "${s.fileName}"
+Columns: ${s.columns.join(', ')}
+Row count: ${s.rowCount}
+File size: ${s.fileSize} bytes
+Sample rows (first 5):
+${sampleStr}`;
+  }).join('\n\n');
+
+  const messages = [{
+    role: 'user',
+    content: `User's presentation request: "${userPrompt}"
+
+Data files available for analysis:
+
+${schemaDescription}
+
+Write a Python script to analyze this data and produce charts, tables, and insights suitable for a presentation about this topic. The script will receive the file path as sys.argv[1].${schemas.length === 1 ? '' : ' Process the primary/most relevant file for the user\'s request.'}`,
+  }];
+
+  console.log(`  Provider:    ${providerName} (${model})`);
+
+  // Call LLM to generate Python script
+  const llmStart = Date.now();
+  let result;
+  try {
+    if (providerName === 'claude') {
+      result = await callClaude(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
+    } else if (providerName === 'gemini') {
+      result = await callGemini(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
+    } else if (providerName === 'openai' && isNativeOpenAIBaseUrl(base)) {
+      result = await callOpenAINative(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
+    } else {
+      result = await callOpenAICompatible(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, 0.2, [], providerName);
+    }
+  } catch (err) {
+    console.error(`  \x1b[31m✗ LLM call failed: ${err.message}\x1b[0m`);
+    return res.status(500).json({ error: `LLM failed: ${err.message}` });
+  }
+  const llmElapsed = ((Date.now() - llmStart) / 1000).toFixed(1);
+  console.log(`  LLM script:  generated in ${llmElapsed}s`);
+
+  // Extract Python code from response
+  const scriptMatch = (result.text || '').match(/```python([\s\S]*?)```/);
+  if (!scriptMatch) {
+    console.log(`  \x1b[31m✗ No Python code block found in LLM response\x1b[0m`);
+    return res.status(500).json({ error: 'LLM did not produce a Python script' });
+  }
+  const pythonScript = scriptMatch[1].trim();
+
+  // Step C: Write script to temp file and execute with uv run
+  const targetSchema = schemas[0];
+  const dataFilePath = getProjectAssetPath(projectId, targetSchema.assetPath);
+  const scriptDir = path.join(getProjectDir(projectId), '_analytics');
+  if (!fs.existsSync(scriptDir)) fs.mkdirSync(scriptDir, { recursive: true });
+  const scriptPath = path.join(scriptDir, `analyze_${Date.now()}.py`);
+
+  // Prepend inline metadata for uv run --script (PEP 723)
+  const ext = path.extname(targetSchema.fileName).toLowerCase();
+  const needsOpenpyxl = ['.xlsx', '.xls'].includes(ext);
+  const inlineMetadata = needsOpenpyxl
+    ? `# /// script\n# requires-python = ">=3.10"\n# dependencies = ["openpyxl"]\n# ///\n\n`
+    : `# /// script\n# requires-python = ">=3.10"\n# dependencies = []\n# ///\n\n`;
+  fs.writeFileSync(scriptPath, inlineMetadata + pythonScript);
+
+  console.log(`  Script:      ${scriptPath}`);
+  console.log(`  Data file:   ${dataFilePath}`);
+
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const execFileAsync = promisify(execFile);
+
+  const execStart = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync('uv', ['run', '--script', scriptPath, dataFilePath], {
+      timeout: 60000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
+
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+
+    if (stderr && stderr.trim()) {
+      const realErrors = stderr.split('\n').filter(l =>
+        !l.trim().startsWith('Resolved') && !l.trim().startsWith('Prepared') &&
+        !l.trim().startsWith('Installed') && !l.trim().startsWith('Audited') &&
+        !l.trim().startsWith('Updated') && !l.trim().startsWith('Using') &&
+        !l.trim().startsWith('Creating') && !l.trim().startsWith('reading') &&
+        l.trim()
+      ).join('\n');
+      if (realErrors) {
+        console.warn(`  [stderr]     ${realErrors.slice(0, 300)}`);
+      }
+    }
+
+    // Parse JSON from stdout
+    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      console.log(`  \x1b[31m✗ Script produced no JSON output (${execElapsed}s)\x1b[0m`);
+      console.log(`  [stdout]     ${stdout.slice(0, 500)}`);
+      return res.status(500).json({ error: 'Analysis script produced no JSON output' });
+    }
+
+    const analysisResult = JSON.parse(jsonMatch[0]);
+    const tables = Array.isArray(analysisResult.tables) ? analysisResult.tables : [];
+    const charts = Array.isArray(analysisResult.charts) ? analysisResult.charts : [];
+    const insights = Array.isArray(analysisResult.insights) ? analysisResult.insights : [];
+
+    console.log(`  \x1b[32m✓ Analysis complete in ${execElapsed}s\x1b[0m`);
+    console.log(`  Output:      ${tables.length} table(s), ${charts.length} chart(s), ${insights.length} insight(s)`);
+
+    const usage = result.usage || {};
+
+    // Clean up script file
+    try { fs.unlinkSync(scriptPath); } catch { /* non-fatal */ }
+
+    res.json({
+      tables,
+      charts,
+      insights,
+      usage: {
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
+        cachedTokens: usage.cachedTokens || 0,
+        thinkingTokens: usage.thinkingTokens || 0,
+      },
+    });
+  } catch (execErr) {
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+    console.error(`  \x1b[31m✗ Script execution failed after ${execElapsed}s\x1b[0m`);
+    console.error(`  Error:       ${execErr.message}`);
+    if (execErr.stderr) console.error(`  [stderr]     ${execErr.stderr.slice(0, 500)}`);
+    if (execErr.stdout) console.error(`  [stdout]     ${execErr.stdout.slice(0, 500)}`);
+
+    // Clean up script file
+    try { fs.unlinkSync(scriptPath); } catch { /* non-fatal */ }
+
+    res.status(500).json({ error: `Script failed: ${execErr.message}` });
   }
 });
 

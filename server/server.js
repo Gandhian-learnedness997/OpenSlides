@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { PDFParse } from 'pdf-parse';
 import XLSX from 'xlsx';
 
@@ -19,6 +21,7 @@ const STATE_ID_REGEX = /^(?:state|auto)_\d+$/;
 const ASSETS_DIRNAME = 'assets';
 const PDF_IMAGE_RENDER_SCALE = Number(process.env.PDF_IMAGE_RENDER_SCALE || 1.5);
 const PDF_IMAGE_RENDER_LIMIT = Number(process.env.PDF_IMAGE_RENDER_LIMIT || 24);
+const execFileAsync = promisify(execFile);
 
 
 // Ensure projects directory exists
@@ -51,6 +54,7 @@ const GEMINI_FILE_POLL_TIMEOUT_MS = 60000;
 const GEMINI_GENERATE_TIMEOUT_MS = 300000;
 const GEMINI_RETRY_DELAY_MS = 1200;
 const GEMINI_MAX_RETRIES = 3;
+const OPENAI_COMPATIBLE_TIMEOUT_MS = Number(process.env.OPENAI_COMPATIBLE_TIMEOUT_MS || 600000);
 const SUPPORTED_PROVIDERS = new Set(Object.keys(DEFAULT_BASE_URLS));
 
 function createHttpError(status, message) {
@@ -354,7 +358,7 @@ function deleteStoredProjectFile(projectId, fileName) {
 function loadProjectFilesForAI(projectId) {
   if (!getProject(projectId)) return [];
 
-  return loadStoredProjectFiles(projectId).map((file) => {
+  return loadStoredProjectFiles(projectId).filter(shouldAttachFileToGeneration).map((file) => {
     const buffer = fs.readFileSync(getProjectAssetPath(projectId, file.assetPath));
     return {
       name: file.name,
@@ -372,6 +376,10 @@ function loadProjectFilesForAI(projectId) {
 function isDataFile(fileName) {
   const ext = path.extname(fileName).toLowerCase();
   return ['.csv', '.xlsx', '.xls'].includes(ext);
+}
+
+function shouldAttachFileToGeneration(file) {
+  return !isDataFile(file.name);
 }
 
 function getDataFileSchemas(projectId) {
@@ -404,6 +412,16 @@ function getDataFileSchemas(projectId) {
   }
 
   return schemas;
+}
+
+function getDataFileSummaries(projectId) {
+  return loadStoredProjectFiles(projectId)
+    .filter((file) => isDataFile(file.name))
+    .map((file) => ({
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+    }));
 }
 
 function loadSettings() {
@@ -1601,16 +1619,26 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
         console.warn(`[openai-compat] retry ${attempt}/${MAX_RETRIES} after ${delay} ms`);
         await new Promise(r => setTimeout(r, delay));
       }
-      const response = await fetch(`${url}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: requestBody,
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`API error ${response.status}: ${errText}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(new Error(`OpenAI-compatible request timed out after ${OPENAI_COMPATIBLE_TIMEOUT_MS} ms`)),
+        OPENAI_COMPATIBLE_TIMEOUT_MS
+      );
+      try {
+        const response = await fetch(`${url}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: requestBody,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`API error ${response.status}: ${errText}`);
+        }
+        data = await response.json();
+      } finally {
+        clearTimeout(timeout);
       }
-      data = await response.json();
       lastError = null;
       break;
     } catch (error) {
@@ -1933,7 +1961,8 @@ app.put('/api/projects/:id/context', (req, res) => {
     const newSearchCount = Array.isArray(req.body?.searchResults) ? req.body.searchResults.length : 0;
     const newDataCount = Array.isArray(req.body?.dataSummaries) ? req.body.dataSummaries.length : 0;
 
-    // Merge: append new search results (deduplicate by URL), append data summaries
+    // Merge search results by URL. Keep accumulated data summaries so the planner
+    // and generator can reuse previous analysis without re-running scripts.
     let addedSearch = 0;
     if (Array.isArray(req.body?.searchResults)) {
       const existingUrls = new Set((existing.searchResults || []).map(r => r.url));
@@ -1946,7 +1975,18 @@ app.put('/api/projects/:id/context', (req, res) => {
       }
     }
     if (Array.isArray(req.body?.dataSummaries)) {
-      existing.dataSummaries = [...(existing.dataSummaries || []), ...req.body.dataSummaries];
+      const existingData = Array.isArray(existing.dataSummaries) ? existing.dataSummaries : [];
+      const seen = new Set(existingData.map((entry) => `${entry.label}\n${entry.data}`));
+      for (const entry of req.body.dataSummaries) {
+        const label = typeof entry?.label === 'string' ? entry.label : '';
+        const data = typeof entry?.data === 'string' ? entry.data : '';
+        const key = `${label}\n${data}`;
+        if (label && data && !seen.has(key)) {
+          existingData.push({ label, data });
+          seen.add(key);
+        }
+      }
+      existing.dataSummaries = existingData.slice(-30);
     }
 
     writeJsonFile(ctxPath, existing);
@@ -2290,24 +2330,33 @@ app.post('/api/plan', async (req, res) => {
   const settings = loadSettings();
 
   console.log(`\n\x1b[35m━━━ [Planner Agent] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
-
-  // If no Tavily key, skip planning entirely
-  if (!settings.tavilyApiKey) {
-    console.log(`  \x1b[33m⊘ No Tavily API key — skipping planning\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'No Tavily API key configured' });
+  const canSearchWeb = Boolean(settings.tavilyApiKey);
+  if (!canSearchWeb) {
+    console.log(`  \x1b[33m⊘ No Tavily API key — planning without web search\x1b[0m`);
   }
 
   const userPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : '';
   if (!userPrompt.trim()) {
     console.log(`  \x1b[33m⊘ Empty prompt — skipping\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'Empty prompt' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'Empty prompt' });
   }
 
+  const projectId = typeof req.body.projectId === 'string' && isSafeProjectId(req.body.projectId)
+    ? req.body.projectId
+    : null;
+  const dataFiles = projectId ? getDataFileSummaries(projectId) : [];
+  const planningPrompt = dataFiles.length > 0
+    ? `${userPrompt}\n\n[Uploaded data files in this project]\n${dataFiles.map((file) => `- ${file.name} (${file.mimeType}, ${file.size} bytes)`).join('\n')}\n\nIf the user asks for data analysis, charts, statistics, trends, comparisons, summaries, or a data-driven presentation, set needsAnalysis=true.`
+    : userPrompt;
+
   // Show prompt (truncated) and whether it has existing context info
-  const hasExistingContext = userPrompt.includes('[Existing project context topics:');
+  const hasExistingContext = planningPrompt.includes('[Existing project context topics:');
   const promptPreview = userPrompt.replace(/\n\n\[Existing project context topics:[\s\S]*$/, '').slice(0, 150);
   console.log(`  Prompt:      "${promptPreview}${promptPreview.length >= 150 ? '...' : ''}"`);
   console.log(`  Has context: ${hasExistingContext ? 'yes' : 'no'}`);
+  if (dataFiles.length > 0) {
+    console.log(`  Data files:  ${dataFiles.map((file) => file.name).join(', ')}`);
+  }
 
   const provider = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
     ? req.body.provider
@@ -2317,14 +2366,14 @@ app.post('/api/plan', async (req, res) => {
 
   if (!apiKey) {
     console.log(`  \x1b[31m✗ No API key for ${provider}\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'No LLM API key for planning' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'No LLM API key for planning' });
   }
 
   let base;
   try {
     base = sanitizeBaseUrl(providerCfg.baseUrl || '', provider);
   } catch {
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'Invalid base URL' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'Invalid base URL' });
   }
 
   const model = (typeof req.body.model === 'string' && req.body.model.trim())
@@ -2332,7 +2381,7 @@ app.post('/api/plan', async (req, res) => {
     : (providerCfg.model || getDefaultModel(provider));
   console.log(`  Provider:    ${provider} (${model})`);
 
-  const messages = [{ role: 'user', content: userPrompt }];
+  const messages = [{ role: 'user', content: planningPrompt }];
   const startTime = Date.now();
 
   try {
@@ -2355,12 +2404,15 @@ app.post('/api/plan', async (req, res) => {
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       const plannerUsage = result.usage || {};
+      const plannerWantedSearch = !!parsed.needsSearch;
       const plan = {
-        needsSearch: !!parsed.needsSearch,
+        needsSearch: canSearchWeb && plannerWantedSearch,
         needsContext: parsed.needsContext !== false,
         needsAnalysis: !!parsed.needsAnalysis,
-        queries: Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
-        reasoning: String(parsed.reasoning || ''),
+        queries: canSearchWeb && Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
+        reasoning: !canSearchWeb && plannerWantedSearch
+          ? `${String(parsed.reasoning || '')} Web search was requested by the planner, but Tavily is not configured, so search was skipped.`
+          : String(parsed.reasoning || ''),
         usage: {
           inputTokens: plannerUsage.inputTokens || 0,
           outputTokens: plannerUsage.outputTokens || 0,
@@ -2385,12 +2437,12 @@ app.post('/api/plan', async (req, res) => {
     } else {
       console.log(`  \x1b[31m✗ Could not parse planner response (${elapsed}s)\x1b[0m`);
       console.log(`  Raw response:  "${text.slice(0, 200)}"`);
-      res.json({ needsSearch: false, needsContext: true, queries: [], reasoning: 'Could not parse planner response' });
+      res.json({ needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: 'Could not parse planner response' });
     }
   } catch (error) {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`  \x1b[31m✗ Planner failed after ${elapsed}s: ${error.message}\x1b[0m`);
-    res.json({ needsSearch: false, queries: [], reasoning: error.message || 'Planning failed' });
+    res.json({ needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: error.message || 'Planning failed' });
   }
 });
 
@@ -2449,6 +2501,180 @@ GUIDELINES:
 
 Output ONLY a python code block with the script. No explanation before or after.`;
 
+function extractPythonScriptFromResponse(text) {
+  const fencedMatch = String(text || '').match(/```(?:python|py)?\s*([\s\S]*?)```/i);
+  if (fencedMatch) return fencedMatch[1].trim();
+
+  const trimmed = String(text || '').trim();
+  if (/^(import|from)\s+/m.test(trimmed) || trimmed.includes('def ')) {
+    return trimmed;
+  }
+
+  return '';
+}
+
+function writeAnalyticsArtifact(runDir, name, value) {
+  const output = typeof value === 'string'
+    ? value
+    : JSON.stringify(value, null, 2);
+  fs.writeFileSync(path.join(runDir, name), output, 'utf-8');
+}
+
+const MAX_ANALYSIS_SCRIPT_ATTEMPTS = Number(process.env.MAX_ANALYSIS_SCRIPT_ATTEMPTS || 3);
+
+async function callAnalystModel(providerName, base, apiKey, model, messages, temperature = 0.2) {
+  if (providerName === 'claude') {
+    return callClaude(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  if (providerName === 'gemini') {
+    return callGemini(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  if (providerName === 'openai' && isNativeOpenAIBaseUrl(base)) {
+    return callOpenAINative(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  return callOpenAICompatible(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, temperature, [], providerName);
+}
+
+function getUvInlineMetadata(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  const needsOpenpyxl = ['.xlsx', '.xls'].includes(ext);
+  return needsOpenpyxl
+    ? `# /// script\n# requires-python = ">=3.10"\n# dependencies = ["openpyxl"]\n# ///\n\n`
+    : `# /// script\n# requires-python = ">=3.10"\n# dependencies = []\n# ///\n\n`;
+}
+
+function summarizeAnalyticsStderr(stderr) {
+  if (!stderr || !stderr.trim()) return '';
+  return stderr.split('\n').filter(l =>
+    !l.trim().startsWith('Resolved') && !l.trim().startsWith('Prepared') &&
+    !l.trim().startsWith('Installed') && !l.trim().startsWith('Audited') &&
+    !l.trim().startsWith('Updated') && !l.trim().startsWith('Using') &&
+    !l.trim().startsWith('Creating') && !l.trim().startsWith('reading') &&
+    l.trim()
+  ).join('\n');
+}
+
+function parseAnalysisStdout(stdout) {
+  const jsonMatch = String(stdout || '').match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return { ok: false, stage: 'parse-output', error: 'Analysis script produced no JSON output' };
+  }
+  try {
+    return { ok: true, result: JSON.parse(jsonMatch[0]) };
+  } catch (parseError) {
+    return { ok: false, stage: 'parse-json', error: parseError.message };
+  }
+}
+
+async function runAnalysisScriptAttempt({ runDir, attempt, script, inlineMetadata, dataFilePath }) {
+  const scriptContent = inlineMetadata + script;
+  const scriptPath = path.join(runDir, `analysis_attempt_${attempt}.py`);
+  fs.writeFileSync(scriptPath, scriptContent);
+  fs.writeFileSync(path.join(runDir, 'analysis.py'), scriptContent);
+
+  const execStart = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync('uv', ['run', '--script', scriptPath, dataFilePath], {
+      timeout: 60000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stdout.txt`, stdout || '');
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stderr.txt`, stderr || '');
+    writeAnalyticsArtifact(runDir, 'stdout.txt', stdout || '');
+    writeAnalyticsArtifact(runDir, 'stderr.txt', stderr || '');
+
+    const realErrors = summarizeAnalyticsStderr(stderr);
+    if (realErrors) {
+      console.warn(`  [attempt ${attempt} stderr] ${realErrors.slice(0, 300)}`);
+    }
+
+    const parsed = parseAnalysisStdout(stdout);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        stage: parsed.stage,
+        error: parsed.error,
+        stdout: stdout || '',
+        stderr: stderr || '',
+        script,
+        scriptPath,
+        execElapsed,
+      };
+    }
+
+    return {
+      ok: true,
+      result: parsed.result,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      script,
+      scriptPath,
+      execElapsed,
+    };
+  } catch (execErr) {
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+    const stdout = execErr.stdout || '';
+    const stderr = execErr.stderr || '';
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stdout.txt`, stdout);
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stderr.txt`, stderr);
+    writeAnalyticsArtifact(runDir, 'stdout.txt', stdout);
+    writeAnalyticsArtifact(runDir, 'stderr.txt', stderr);
+
+    return {
+      ok: false,
+      stage: 'execute',
+      error: execErr.message,
+      stdout,
+      stderr,
+      script,
+      scriptPath,
+      execElapsed,
+    };
+  }
+}
+
+function buildAnalysisRepairMessages({ userPrompt, schemaDescription, previousScript, failure, attempt, maxAttempts }) {
+  return [{
+    role: 'user',
+    content: `The previous analytics Python script failed. Repair it.
+
+User's presentation request:
+"${userPrompt}"
+
+Data files available for analysis:
+
+${schemaDescription}
+
+Failed attempt: ${attempt - 1} of ${maxAttempts}
+Failure stage: ${failure.stage}
+Error:
+${failure.error || '(none)'}
+
+stderr:
+${failure.stderr || '(empty)'}
+
+stdout:
+${failure.stdout || '(empty)'}
+
+Previous Python script:
+\`\`\`python
+${previousScript}
+\`\`\`
+
+Return a corrected Python script only.
+Requirements:
+- Preserve the user's analysis goal.
+- Fix the exact syntax/runtime/JSON-output problem shown above.
+- The script receives the data file path as sys.argv[1].
+- Print ONLY one JSON object to stdout.
+- The JSON object must contain "tables", "charts", and "insights" arrays.
+- Do not print debugging text, markdown, or explanations.
+- Use only the allowed libraries from the original instructions.`,
+  }];
+}
+
 app.post('/api/analyze', async (req, res) => {
   const settings = loadSettings();
 
@@ -2475,10 +2701,20 @@ app.post('/api/analyze', async (req, res) => {
   console.log(`  Project:     ${projectId}`);
   console.log(`  Data files:  ${schemas.map(s => `${s.fileName} (${s.rowCount} rows, ${s.columns.length} cols)`).join(', ')}`);
 
+  const analyticsRoot = path.join(getProjectDir(projectId), '_analytics');
+  fs.mkdirSync(analyticsRoot, { recursive: true });
+  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+  const runDir = path.join(analyticsRoot, runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  writeAnalyticsArtifact(runDir, 'request.txt', userPrompt);
+  writeAnalyticsArtifact(runDir, 'schemas.json', schemas);
+  console.log(`  Run dir:     ${runDir}`);
+
   const providerCfg = getProviderConfig(settings, providerName);
   const apiKey = providerCfg.apiKey;
   if (!apiKey) {
     console.log(`  \x1b[31m✗ No API key for ${providerName}\x1b[0m`);
+    writeAnalyticsArtifact(runDir, 'error.json', { stage: 'config', error: `No API key for ${providerName}` });
     return res.status(400).json({ error: `No API key for ${providerName}` });
   }
 
@@ -2486,6 +2722,7 @@ app.post('/api/analyze', async (req, res) => {
   try {
     base = sanitizeBaseUrl(providerCfg.baseUrl || '', providerName);
   } catch {
+    writeAnalyticsArtifact(runDir, 'error.json', { stage: 'config', error: 'Invalid base URL' });
     return res.status(400).json({ error: 'Invalid base URL' });
   }
 
@@ -2517,123 +2754,130 @@ Write a Python script to analyze this data and produce charts, tables, and insig
 
   console.log(`  Provider:    ${providerName} (${model})`);
 
-  // Call LLM to generate Python script
-  const llmStart = Date.now();
-  let result;
-  try {
-    if (providerName === 'claude') {
-      result = await callClaude(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
-    } else if (providerName === 'gemini') {
-      result = await callGemini(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
-    } else if (providerName === 'openai' && isNativeOpenAIBaseUrl(base)) {
-      result = await callOpenAINative(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, 0.2, []);
-    } else {
-      result = await callOpenAICompatible(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, 0.2, [], providerName);
-    }
-  } catch (err) {
-    console.error(`  \x1b[31m✗ LLM call failed: ${err.message}\x1b[0m`);
-    return res.status(500).json({ error: `LLM failed: ${err.message}` });
-  }
-  const llmElapsed = ((Date.now() - llmStart) / 1000).toFixed(1);
-  console.log(`  LLM script:  generated in ${llmElapsed}s`);
-
-  // Extract Python code from response
-  const scriptMatch = (result.text || '').match(/```python([\s\S]*?)```/);
-  if (!scriptMatch) {
-    console.log(`  \x1b[31m✗ No Python code block found in LLM response\x1b[0m`);
-    return res.status(500).json({ error: 'LLM did not produce a Python script' });
-  }
-  const pythonScript = scriptMatch[1].trim();
-
-  // Step C: Write script to temp file and execute with uv run
   const targetSchema = schemas[0];
   const dataFilePath = getProjectAssetPath(projectId, targetSchema.assetPath);
-  const scriptDir = path.join(getProjectDir(projectId), '_analytics');
-  if (!fs.existsSync(scriptDir)) fs.mkdirSync(scriptDir, { recursive: true });
-  const scriptPath = path.join(scriptDir, `analyze_${Date.now()}.py`);
-
-  // Prepend inline metadata for uv run --script (PEP 723)
-  const ext = path.extname(targetSchema.fileName).toLowerCase();
-  const needsOpenpyxl = ['.xlsx', '.xls'].includes(ext);
-  const inlineMetadata = needsOpenpyxl
-    ? `# /// script\n# requires-python = ">=3.10"\n# dependencies = ["openpyxl"]\n# ///\n\n`
-    : `# /// script\n# requires-python = ">=3.10"\n# dependencies = []\n# ///\n\n`;
-  fs.writeFileSync(scriptPath, inlineMetadata + pythonScript);
-
-  console.log(`  Script:      ${scriptPath}`);
+  const inlineMetadata = getUvInlineMetadata(targetSchema.fileName);
   console.log(`  Data file:   ${dataFilePath}`);
 
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const execFileAsync = promisify(execFile);
+  let currentMessages = messages;
+  let previousScript = '';
+  let lastFailure = null;
+  const attempts = [];
+  const totalUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    thinkingTokens: 0,
+  };
 
-  const execStart = Date.now();
-  try {
-    const { stdout, stderr } = await execFileAsync('uv', ['run', '--script', scriptPath, dataFilePath], {
-      timeout: 60000,
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-    });
-
-    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
-
-    if (stderr && stderr.trim()) {
-      const realErrors = stderr.split('\n').filter(l =>
-        !l.trim().startsWith('Resolved') && !l.trim().startsWith('Prepared') &&
-        !l.trim().startsWith('Installed') && !l.trim().startsWith('Audited') &&
-        !l.trim().startsWith('Updated') && !l.trim().startsWith('Using') &&
-        !l.trim().startsWith('Creating') && !l.trim().startsWith('reading') &&
-        l.trim()
-      ).join('\n');
-      if (realErrors) {
-        console.warn(`  [stderr]     ${realErrors.slice(0, 300)}`);
-      }
+  for (let attempt = 1; attempt <= MAX_ANALYSIS_SCRIPT_ATTEMPTS; attempt++) {
+    const llmStart = Date.now();
+    let result;
+    try {
+      result = await callAnalystModel(providerName, base, apiKey, model, currentMessages, attempt === 1 ? 0.2 : 0.1);
+    } catch (err) {
+      console.error(`  \x1b[31m✗ LLM ${attempt === 1 ? 'generation' : 'repair'} failed: ${err.message}\x1b[0m`);
+      writeAnalyticsArtifact(runDir, 'error.json', {
+        stage: attempt === 1 ? 'llm' : 'llm-repair',
+        attempt,
+        error: err.message,
+        attempts,
+      });
+      return res.status(500).json({ error: `LLM failed: ${err.message}` });
     }
-
-    // Parse JSON from stdout
-    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.log(`  \x1b[31m✗ Script produced no JSON output (${execElapsed}s)\x1b[0m`);
-      console.log(`  [stdout]     ${stdout.slice(0, 500)}`);
-      return res.status(500).json({ error: 'Analysis script produced no JSON output' });
-    }
-
-    const analysisResult = JSON.parse(jsonMatch[0]);
-    const tables = Array.isArray(analysisResult.tables) ? analysisResult.tables : [];
-    const charts = Array.isArray(analysisResult.charts) ? analysisResult.charts : [];
-    const insights = Array.isArray(analysisResult.insights) ? analysisResult.insights : [];
-
-    console.log(`  \x1b[32m✓ Analysis complete in ${execElapsed}s\x1b[0m`);
-    console.log(`  Output:      ${tables.length} table(s), ${charts.length} chart(s), ${insights.length} insight(s)`);
 
     const usage = result.usage || {};
+    totalUsage.inputTokens += usage.inputTokens || 0;
+    totalUsage.outputTokens += usage.outputTokens || 0;
+    totalUsage.cachedTokens += usage.cachedTokens || 0;
+    totalUsage.thinkingTokens += usage.thinkingTokens || 0;
 
-    // Clean up script file
-    try { fs.unlinkSync(scriptPath); } catch { /* non-fatal */ }
+    const llmElapsed = ((Date.now() - llmStart) / 1000).toFixed(1);
+    console.log(`  LLM script:  ${attempt === 1 ? 'generated' : `repaired attempt ${attempt}`} in ${llmElapsed}s`);
+    writeAnalyticsArtifact(runDir, attempt === 1 ? 'model-response.txt' : `attempt_${attempt}_model-response.txt`, result.text || '');
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_model-response.txt`, result.text || '');
 
-    res.json({
-      tables,
-      charts,
-      insights,
-      usage: {
-        inputTokens: usage.inputTokens || 0,
-        outputTokens: usage.outputTokens || 0,
-        cachedTokens: usage.cachedTokens || 0,
-        thinkingTokens: usage.thinkingTokens || 0,
-      },
-    });
-  } catch (execErr) {
-    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
-    console.error(`  \x1b[31m✗ Script execution failed after ${execElapsed}s\x1b[0m`);
-    console.error(`  Error:       ${execErr.message}`);
-    if (execErr.stderr) console.error(`  [stderr]     ${execErr.stderr.slice(0, 500)}`);
-    if (execErr.stdout) console.error(`  [stdout]     ${execErr.stdout.slice(0, 500)}`);
+    const pythonScript = extractPythonScriptFromResponse(result.text || '');
+    if (!pythonScript) {
+      previousScript = result.text || '';
+      lastFailure = {
+        stage: attempt === 1 ? 'extract-script' : 'extract-repair-script',
+        error: 'LLM did not produce a Python script',
+        stdout: '',
+        stderr: '',
+      };
+      attempts.push({ attempt, stage: lastFailure.stage, error: lastFailure.error });
+      writeAnalyticsArtifact(runDir, `attempt_${attempt}_error.json`, lastFailure);
+    } else {
+      previousScript = pythonScript;
+      const runResult = await runAnalysisScriptAttempt({
+        runDir,
+        attempt,
+        script: pythonScript,
+        inlineMetadata,
+        dataFilePath,
+      });
+      console.log(`  Script:      ${runResult.scriptPath}`);
 
-    // Clean up script file
-    try { fs.unlinkSync(scriptPath); } catch { /* non-fatal */ }
+      if (runResult.ok) {
+        const analysisResult = runResult.result;
+        writeAnalyticsArtifact(runDir, 'result.json', analysisResult);
+        const tables = Array.isArray(analysisResult.tables) ? analysisResult.tables : [];
+        const charts = Array.isArray(analysisResult.charts) ? analysisResult.charts : [];
+        const insights = Array.isArray(analysisResult.insights) ? analysisResult.insights : [];
 
-    res.status(500).json({ error: `Script failed: ${execErr.message}` });
+        console.log(`  \x1b[32m✓ Analysis complete in ${runResult.execElapsed}s on attempt ${attempt}\x1b[0m`);
+        console.log(`  Output:      ${tables.length} table(s), ${charts.length} chart(s), ${insights.length} insight(s)`);
+
+        return res.json({
+          tables,
+          charts,
+          insights,
+          artifactPath: path.relative(getProjectDir(projectId), runDir),
+          usage: totalUsage,
+        });
+      }
+
+      lastFailure = {
+        stage: runResult.stage,
+        error: runResult.error,
+        stdout: runResult.stdout,
+        stderr: runResult.stderr,
+        execElapsed: runResult.execElapsed,
+      };
+      attempts.push({
+        attempt,
+        stage: runResult.stage,
+        error: runResult.error,
+        execElapsed: runResult.execElapsed,
+      });
+      writeAnalyticsArtifact(runDir, `attempt_${attempt}_error.json`, lastFailure);
+      console.error(`  \x1b[31m✗ Attempt ${attempt} failed at ${runResult.stage} after ${runResult.execElapsed}s\x1b[0m`);
+      console.error(`  Error:       ${String(runResult.error || '').slice(0, 500)}`);
+      if (runResult.stderr) console.error(`  [stderr]     ${runResult.stderr.slice(0, 500)}`);
+      if (runResult.stdout) console.error(`  [stdout]     ${runResult.stdout.slice(0, 500)}`);
+    }
+
+    if (attempt < MAX_ANALYSIS_SCRIPT_ATTEMPTS) {
+      console.log(`  Repair:      requesting corrected script (attempt ${attempt + 1}/${MAX_ANALYSIS_SCRIPT_ATTEMPTS})`);
+      currentMessages = buildAnalysisRepairMessages({
+        userPrompt,
+        schemaDescription,
+        previousScript,
+        failure: lastFailure,
+        attempt: attempt + 1,
+        maxAttempts: MAX_ANALYSIS_SCRIPT_ATTEMPTS,
+      });
+    }
   }
+
+  const finalError = lastFailure?.error || 'Analysis script failed';
+  writeAnalyticsArtifact(runDir, 'error.json', {
+    stage: lastFailure?.stage || 'analysis-failed',
+    error: finalError,
+    attempts,
+  });
+  return res.status(500).json({ error: `Script failed after ${MAX_ANALYSIS_SCRIPT_ATTEMPTS} attempts: ${finalError}` });
 });
 
 // ============================================================
@@ -2727,6 +2971,9 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`OpenSlides server running on http://localhost:${PORT}`);
 });
+server.requestTimeout = OPENAI_COMPATIBLE_TIMEOUT_MS + 60000;
+server.headersTimeout = OPENAI_COMPATIBLE_TIMEOUT_MS + 65000;
+server.keepAliveTimeout = 65000;

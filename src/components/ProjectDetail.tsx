@@ -32,6 +32,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<import("@/types").UrlSource[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [pendingDraftMessage, setPendingDraftMessage] = useState<string | null>(null);
   const [projectProvider, setProjectProvider] = useState<AIProvider | null>(null);
   const { t } = useLanguage();
 
@@ -60,6 +61,31 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const isResizingLeft = useRef(false);
   const isResizingRight = useRef(false);
 
+  const isDataFile = (file: LocalFile): boolean => {
+    const name = file.name.toLowerCase();
+    return name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls');
+  };
+
+  const promptLooksDataDriven = (prompt: string): boolean =>
+    /\b(analy[sz]e|analysis|data|dataset|csv|xlsx|xls|chart|plot|visuali[sz]e|statistics|stats|trend|compare|comparison|distribution|correlation|survival|table|summary|summari[sz]e)\b/i.test(prompt);
+
+  const promptAsksForFreshAnalysis = (prompt: string): boolean =>
+    /\b(reanaly[sz]e|run again|rerun|new analysis|different|another|update|updated|fresh|recompute|calculate|breakdown by|group by|segment by)\b/i.test(prompt);
+
+  const isDefaultPlaceholderSlides = (html: string | null): boolean => {
+    if (!html) return true;
+    const normalized = html.replace(/\s+/g, ' ').trim();
+    if (!normalized) return true;
+
+    return (
+      normalized.includes('<title>OpenSlides</title>') &&
+      normalized.includes('fonts.googleapis.com/css2?family=Inter') &&
+      normalized.includes('--primary-color: #6c63ff') &&
+      normalized.includes('<div class="slides">') &&
+      (normalized.match(/<section\b/gi)?.length || 0) === 1
+    );
+  };
+
   const buildConversationSummary = (history: ChatMessage[], currentFiles: LocalFile[]): string => {
     const recent = history
       .filter(msg => !msg.isError)
@@ -84,8 +110,13 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     if (assistantMessages.length > 0) {
       lines.push(`Recent assistant work: ${assistantMessages.map(msg => msg.content).join(' | ')}`);
     }
-    if (currentFiles.length > 0) {
-      lines.push(`Project source files: ${currentFiles.map(file => file.name).join(', ')}`);
+    const generationFiles = currentFiles.filter((file) => !isDataFile(file));
+    const dataFiles = currentFiles.filter(isDataFile);
+    if (generationFiles.length > 0) {
+      lines.push(`Project source files: ${generationFiles.map(file => file.name).join(', ')}`);
+    }
+    if (dataFiles.length > 0) {
+      lines.push(`Project data files available for analytics: ${dataFiles.map(file => file.name).join(', ')}`);
     }
 
     return lines.join('\n');
@@ -165,7 +196,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     try {
       const rawHistory = chatHistoryRef.current || [];
       const filteredHistory = filterChatHistory(rawHistory);
-      const currentSlidesForApi = includeSlides ? slidesData : null;
+      const currentSlidesForApi = includeSlides && !isDefaultPlaceholderSlides(slidesData) ? slidesData : null;
 
       // Planner decides: (1) whether to search the web, (2) whether to include existing context
       let searchContext = '';
@@ -212,7 +243,13 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
           }
 
           // Data Analytics Agent — analyze uploaded data files if planner says so
-          if (plan.needsAnalysis) {
+          const hasExistingDataContext = persistedContext.includes('[Data Summaries]');
+          const shouldAnalyzeData = plan.needsAnalysis || (
+            uploadedFiles.some(isDataFile)
+            && promptLooksDataDriven(userPrompt)
+            && (!hasExistingDataContext || promptAsksForFreshAnalysis(userPrompt))
+          );
+          if (shouldAnalyzeData) {
             try {
               setSearchStatus('analyzing');
               const analysisResult = await analyzeData(project.id, userPrompt, providerOverride);
@@ -593,7 +630,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             onRenameVersion={handleRenameVersion}
             onDeleteVersion={handleDeleteVersion}
             onEditorChange={(html: string) => setSlidesData(html)}
-            onFixOverflow={(prompt: string) => setPendingMessage(prompt)}
+            onFixOverflow={(prompt: string) => setPendingDraftMessage(prompt)}
             projectId={project.id}
           />
         </div>
@@ -620,6 +657,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             loadedHistory={loadedChatHistory}
             pendingMessage={pendingMessage}
             onPendingMessageConsumed={() => setPendingMessage(null)}
+            pendingDraftMessage={pendingDraftMessage}
+            onPendingDraftMessageConsumed={() => setPendingDraftMessage(null)}
             searchStatus={searchStatus}
             projectProvider={projectProvider}
             onProjectProviderChange={handleProjectProviderChange}

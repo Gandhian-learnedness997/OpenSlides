@@ -209,7 +209,7 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
 
   const ALLOWED_EXTENSIONS = [
     "png", "jpeg", "jpg", "svg", "pdf",
-    "txt", "text", "csv", "md", "py", "sh",
+    "txt", "text", "csv", "xls", "xlsx", "md", "py", "sh",
   ];
 
   const queueFilesForUpload = (incomingFiles: File[] | FileList) => {
@@ -763,7 +763,7 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
             className="hidden"
             onChange={handleUpload}
             multiple
-            accept=".png,.jpeg,.jpg,.svg,.pdf,.txt,.text,.csv,.md,.py,.sh"
+            accept=".png,.jpeg,.jpg,.svg,.pdf,.txt,.text,.csv,.xls,.xlsx,.md,.py,.sh"
           />
         </label>
 

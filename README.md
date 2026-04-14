@@ -1,84 +1,34 @@
 # OpenSlides
 
-OpenSlides is a local-first AI presentation workspace for building polished `reveal.js` decks from prompts, uploaded files, and iterative edits.
+OpenSlides is a local-first AI workspace for creating and editing `reveal.js` presentations. It lets you generate slides from prompts, uploaded sources, web search, and data analysis, then refine the deck in a visual editor or raw HTML view.
 
-It combines a React editor, an Express backend, versioned project storage, and multi-provider AI support so you can go from rough idea to presentable slides without leaving the app.
-
-[中文版Readme](./README.zh-CN.md)
-
-## Table of Contents
-
-- [Why OpenSlides](#why-openslides)
-- [Highlights](#highlights)
-- [Demo](#demo)
-- [How It Works](#how-it-works)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Workflow Features](#workflow-features)
-- [Provider Notes](#provider-notes)
-- [Presentation Shortcuts](#presentation-shortcuts)
-- [Development Notes](#development-notes)
-- [Acknowledgements](#acknowledgements)
-
-## Why OpenSlides
-
-OpenSlides is designed for a practical presentation workflow:
-
-- Generate complete `reveal.js` presentations from a prompt or source files
-- Refine decks through follow-up chat instead of starting over
-- Edit text inline directly inside the slide preview
-- Switch to code view when you want full HTML and CSS control
-- Keep auto-saved and manual versions so experimentation feels safe
-- Present in-browser or export a standalone HTML deck
-
-## Highlights
-
-| Area | What you get |
-| --- | --- |
-| AI generation | Supports Gemini, Claude, and OpenAI-compatible APIs |
-| Better prompts, lower cost | Provider-aware prompt caching behavior for Gemini, Claude, and OpenAI |
-| Source-aware decks | Upload PDFs, images, text, CSV, Markdown, and more as project references |
-| Inline editing | Click visible text in the preview to edit slides directly |
-| Structured iteration | AI can modify existing decks with diff-based updates instead of regenerating everything |
-| Safe history | Auto-saves after generation plus manual named snapshots |
-| Overflow recovery | Detects slides that exceed the viewport and can ask AI to fix them |
-| Presentation controls | Reveal transitions, navigation color, and auto-play configuration |
-| Export paths | Open a presentation tab or download a self-contained HTML file |
-| Bilingual UI | English and Chinese interface support |
+[中文版 Readme](./README.zh-CN.md)
 
 ## Demo
 
-Use the link below to open the slides directly in the browser.
+Try the browser demo:
 
-The slides is built on my recent paper [PIRA-Bench](https://arxiv.org/abs/2603.08013). The sources are paper pdf, two images from the paper. It totally cost around $0.3 by using gemini-3.1-pro-preview.
+[PIRA-Bench: Proactive GUI Agents](https://yuxiangchai.github.io/OpenSlides/index.html)
 
-### PIRA-Bench: Proactive GUI Agents
+The demo deck was generated from the PIRA-Bench paper PDF plus two paper images.
 
-<a href="https://yuxiangchai.github.io/OpenSlides/index.html" target="_blank" rel="noopener noreferrer">Try demo</a>
+## Installation
 
-## How It Works
-
-1. Create a project.
-2. Upload reference material such as PDFs, images, CSVs, or notes.
-3. Configure your AI provider in Settings.
-4. Ask OpenSlides to create a deck or revise the current one.
-5. Fine-tune in the visual editor or the code editor.
-6. Save versions, present in a new tab, or download the deck as HTML.
-
-## Quick Start
-
-### Requirements
+Requirements:
 
 - Node.js 18+
 - npm
+- Optional: `uv` if you want to use the data analytics agent, because analysis scripts run locally through `uv run --script`
 
-### Install
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-### Run in Development
+## Run
+
+Start the development app:
 
 ```bash
 npm run dev
@@ -86,16 +36,16 @@ npm run dev
 
 This starts:
 
-- Vite frontend on `http://localhost:5173`
-- Express backend on `http://localhost:3001`
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:3001`
 
-### Build
+Build for production:
 
 ```bash
 npm run build
 ```
 
-### Run Production Build
+Run the production server:
 
 ```bash
 npm run start
@@ -103,102 +53,72 @@ npm run start
 
 The backend uses `PORT` if provided, otherwise it defaults to `3001`.
 
-## Configuration
+## Basic Usage
 
-**Notice:** I currently only test with Gemini including the native Gemini and [Aihubmix](https://aihubmix.com/). The rest Claude and OpenAI are all vibe coded. Feel free to PR on these two providers.
+1. Open the app and create a project.
+2. Open Settings and configure an AI provider.
+3. Upload source files if needed, such as PDFs, images, Markdown, text, CSV, Excel, or code files.
+4. Ask the chat panel to generate or revise a presentation.
+5. Edit text directly in the preview, or switch to code view for full HTML/CSS control.
+6. Save versions, present in the browser, or download the deck as standalone HTML.
 
-Open the Settings panel in the app and choose:
+## Supported Providers
 
-- Provider: `Gemini`, `Claude`, or `OpenAI`
-- API key
-- Base URL
-- Model name
+OpenSlides supports native and OpenAI-compatible providers:
 
-Provider defaults in the current codebase:
+| Provider | Integration |
+| --- | --- |
+| Gemini | Native Gemini API |
+| Claude | Native Anthropic API |
+| OpenAI | Native OpenAI API, or OpenAI-compatible mode when using a custom base URL |
+| Kimi Coding | OpenAI-compatible chat completions |
+| GLM Coding | OpenAI-compatible chat completions |
+| Qwen Coding | OpenAI-compatible chat completions |
+| MiniMax | OpenAI-compatible chat completions |
+| OpenRouter | OpenAI-compatible chat completions |
 
-| Provider | Default model | Default base URL |
-| --- | --- | --- |
-| Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com` |
-| Claude | `claude-sonnet-4.6` | `https://api.anthropic.com` |
-| OpenAI | `gpt-5.4` | `https://api.openai.com/v1` |
+Settings are configured from the in-app Settings panel. Each provider can have its own API key, base URL, and model name. Projects can also remember their selected provider.
 
-Settings are stored locally in `settings.json` when saved through the backend.
+## Supported Agents
 
-## Workflow Features
+OpenSlides uses several internal agents around the main slide generator:
 
-### AI-first deck creation
+| Agent | What it does |
+| --- | --- |
+| Planning agent | Decides whether the request needs saved context, web search, or data analysis before generation. It still works without Tavily; it simply skips web search. |
+| Search agent | Uses Tavily when a Tavily API key is configured, then saves useful search context for later turns. |
+| Data analytics agent | Inspects uploaded CSV/XLS/XLSX files, generates and runs a local Python analysis script, and passes compact tables, charts, and insights to the slide generator. |
+| Generation agent | Creates or edits the `reveal.js` deck using the user prompt, selected project context, uploaded source references, and analytics/search results. |
 
-OpenSlides asks the model for a complete standalone `reveal.js` HTML deck. The built-in system prompt pushes for:
+Raw data files are not sent directly to the generation agent as normal context. The analytics agent sends summarized results instead.
 
-- strong visual direction
-- real presentation layouts instead of generic slides
-- full HTML output
-- overflow-aware design decisions
-- edit-mode diffs for iterative changes
+## Source Files
 
-### Local project storage
+The Sources panel supports file picker upload, drag-and-drop, and clipboard paste. It can preview common source types inside the app:
 
-Each project is stored on disk under `projects/`, including:
+| Type | Examples |
+| --- | --- |
+| Images | `.png`, `.jpg`, `.jpeg`, `.svg` |
+| PDF | `.pdf` |
+| Text and Markdown | `.txt`, `.md` |
+| Tables | `.csv`, `.xls`, `.xlsx` |
+| Code | `.py`, `.sh` |
 
-- uploaded files
-- saved HTML states
-- chat history
-- lightweight conversation context
-
-This makes the app easy to inspect, back up, and self-host.
-
-### Version control for decks
-
-OpenSlides keeps two parallel histories:
-
-- auto-saves after AI generations
-- manual saves for user-approved milestones
-
-You can load, rename, and delete saved states from the History panel.
-
-### Editing and presentation
-
-Inside the slide workspace, you can:
-
-- edit text inline in the preview
-- open raw HTML in code view
-- change section transitions
-- adjust navigation arrow color
-- configure deck auto-play
-- open a presentation tab
-- download a standalone HTML file
+Uploaded files are stored under the project folder in `projects/<project>/assets/`.
 
 ## Presentation Shortcuts
-
-These keyboard shortcuts are available during a reveal.js presentation:
 
 | Key | Action |
 | --- | --- |
 | `F` | Toggle fullscreen |
 | `O` / `Esc` | Toggle slide overview |
-| `S` | Open speaker notes window |
-| `Space` | Pause / resume auto-play |
-| `→` / `↓` | Next slide |
-| `←` / `↑` | Previous slide |
-| `Home` | Jump to first slide |
-| `End` | Jump to last slide |
-| `B` / `.` | Black out the screen (press again to resume) |
+| `S` | Open speaker notes |
+| `Space` | Pause or resume auto-play |
+| Arrow keys | Navigate slides |
+| `Home` / `End` | Jump to first or last slide |
+| `B` / `.` | Black out the screen |
 
-## Provider Notes
-
-| Provider | Integration style | Notes |
-| --- | --- | --- |
-| Gemini | Native Gemini API plus file upload and cache helpers | Includes file reuse and optional explicit cache creation |
-| Claude | Native Anthropic Messages API | Uses `cache_control` markers for stable prompt prefixes |
-| OpenAI | Native OpenAI API or compatible proxy | Supports direct OpenAI and OpenAI-compatible endpoints |
-
-## Development Notes
-
-- Frontend: React + TypeScript + Vite
-- Backend: Express
-- Presentation engine: `reveal.js`
-- Styling: Tailwind utilities plus custom component styling
-- Data model: local filesystem storage under `projects/`
+## Development
 
 Useful commands:
 
@@ -209,8 +129,10 @@ npm run start
 npm run preview
 ```
 
+Project data is stored locally under `projects/`, including uploaded files, saved slide states, chat history, and analytics artifacts.
+
 ## Acknowledgements
 
-Thanks to [reveal.js](https://revealjs.com/) for the presentation engine that makes this project possible.
+OpenSlides uses [reveal.js](https://revealjs.com/) as the presentation engine.
 
-Thanks also to [ryanbbrown/revealjs-skill](https://github.com/ryanbbrown/revealjs-skill) for inspiration and helpful Reveal.js workflow ideas.
+Thanks to [ryanbbrown/revealjs-skill](https://github.com/ryanbbrown/revealjs-skill) for Reveal.js workflow inspiration.

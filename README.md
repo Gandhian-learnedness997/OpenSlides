@@ -16,9 +16,17 @@ The demo deck was generated from the PIRA-Bench paper PDF plus two paper images.
 
 Requirements:
 
-- Node.js 18+
-- npm
-- Optional: `uv` if you want to use the data analytics agent, because analysis scripts run locally through `uv run --script`
+- [nvm](https://github.com/nvm-sh/nvm) for installing and managing Node.js
+- Node.js 18+ installed through nvm; npm is included with Node.js
+- Optional: [uv](https://docs.astral.sh/uv/getting-started/installation/) if you want to use the data analytics agent, because analysis scripts run locally through `uv run --script`
+
+Example with nvm:
+
+```bash
+nvm install node
+node --version
+npm --version
+```
 
 Install dependencies:
 

@@ -769,7 +769,11 @@ const inlineExternalResources = async (html: string): Promise<string> => {
 // Persists across renders so external resources are only fetched once per session.
 const _resourceCache = new Map<string, string>();
 
-const inlineExternalResourcesCached = async (html: string): Promise<string> => {
+const inlineExternalResourcesCached = async (
+  html: string,
+  options: { inlineScripts?: boolean } = {}
+): Promise<string> => {
+  const inlineScripts = options.inlineScripts !== false;
   let result = html;
 
   // Inline CSS
@@ -809,6 +813,8 @@ const inlineExternalResourcesCached = async (html: string): Promise<string> => {
   }
 
   // Inline JS
+  if (!inlineScripts) return result;
+
   const jsRegex = /<script\s+[^>]*src=["'](https?:\/\/[^"']+)["'][^>]*><\/script>/gi;
   for (const match of [...html.matchAll(jsRegex)]) {
     const fullTag = match[0];
@@ -1104,7 +1110,7 @@ export default function SlidePreview({
   useEffect(() => {
     let cancelled = false;
     const content = useChinaCDN ? applyChinaCDN(editorFrameContent) : editorFrameContent;
-    inlineExternalResourcesCached(content).then(inlined => {
+    inlineExternalResourcesCached(content, { inlineScripts: false }).then(inlined => {
       if (!cancelled) setInlinedEditorContent(inlined);
     });
     return () => { cancelled = true; };
@@ -1620,8 +1626,8 @@ export default function SlidePreview({
                       const slideList = overflowSlides.map(s => `slide ${s.index}${s.title ? ` ("${s.title}")` : ''}`).join(', ');
                       onFixOverflow(
                         `The following slides have content that overflows beyond the visible area: ${slideList}. ` +
-                        `Please fix the overflow by reducing content, using smaller font sizes, splitting into more slides, ` +
-                        `or using vertical sub-slides (nested <section> tags). Make sure all content fits within the 1280×720 viewport.`
+                        `Please fix the overflow by reducing content, using smaller font sizes, or splitting content into more top-level horizontal slides. ` +
+                        `Do not use nested vertical sub-slides. Make sure all content fits within the 1280×720 viewport.`
                       );
                     }}
                     className="shrink-0 px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium transition-colors"

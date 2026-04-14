@@ -13,7 +13,9 @@ interface AIChatProps {
   isCreatingNewChat: boolean;
   pendingMessage?: string | null;
   onPendingMessageConsumed?: () => void;
-  searchStatus?: 'idle' | 'planning' | 'searching' | 'generating';
+  pendingDraftMessage?: string | null;
+  onPendingDraftMessageConsumed?: () => void;
+  searchStatus?: 'idle' | 'planning' | 'searching' | 'analyzing' | 'generating';
   projectProvider?: AIProvider | null;
   onProjectProviderChange?: (provider: AIProvider) => void;
 }
@@ -27,7 +29,7 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
   qwen: 'Qwen Coding',
 };
 
-export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat, pendingMessage, onPendingMessageConsumed, searchStatus = 'idle', projectProvider, onProjectProviderChange }: AIChatProps) {
+export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loadedHistory, onNewChat, isCreatingNewChat, pendingMessage, onPendingMessageConsumed, pendingDraftMessage, onPendingDraftMessageConsumed, searchStatus = 'idle', projectProvider, onProjectProviderChange }: AIChatProps) {
   const [message, setMessage] = useState<string>("");
   const [includeSlides, setIncludeSlides] = useState(true);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -36,6 +38,7 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dropZoneRef = useRef<HTMLFormElement | null>(null);
   const providerDropdownRef = useRef<HTMLDivElement | null>(null);
   const { t } = useLanguage();
@@ -229,6 +232,22 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
     }
   }, [pendingMessage]);
 
+  // Handle parent-provided draft messages. These populate the textbox without sending.
+  useEffect(() => {
+    if (!pendingDraftMessage) return;
+
+    setMessage((prev) => {
+      const existing = prev.trimEnd();
+      return existing ? `${existing}\n\n${pendingDraftMessage}` : pendingDraftMessage;
+    });
+    onPendingDraftMessageConsumed?.();
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const length = textareaRef.current?.value.length ?? 0;
+      textareaRef.current?.setSelectionRange(length, length);
+    });
+  }, [pendingDraftMessage, onPendingDraftMessageConsumed]);
+
   const scrollToBottom = () => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
@@ -292,30 +311,6 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
         ref={chatContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-background"
       >
-        {/* Model picker for new projects with multiple providers */}
-        {showModelPicker && configuredProviders.length > 1 && (
-          <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
-            <p className="text-xs text-blue-300 mb-2 font-medium">Select a model for this project:</p>
-            <div className="flex flex-wrap gap-1.5">
-              {configuredProviders.map(p => (
-                <button
-                  key={p}
-                  onClick={() => {
-                    setSelectedProvider(p);
-                    setShowModelPicker(false);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    selectedProvider === p
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
-                  }`}
-                >
-                  {PROVIDER_LABELS[p]}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
         {chatHistory.map((msg, index) => (
           <div
             key={index}
@@ -375,10 +370,11 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
                 <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
               </div>
-              {isCreatingNewChat && <span className="ml-2 text-xs text-gray-400">Saving & Creating...</span>}
-              {!isCreatingNewChat && searchStatus === 'planning' && <span className="ml-2 text-xs text-gray-400">Planning search...</span>}
-              {!isCreatingNewChat && searchStatus === 'searching' && <span className="ml-2 text-xs text-emerald-400">Searching the web...</span>}
-              {!isCreatingNewChat && searchStatus === 'generating' && <span className="ml-2 text-xs text-gray-400">Generating slides...</span>}
+              {isCreatingNewChat && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusSaving')}</span>}
+              {!isCreatingNewChat && searchStatus === 'planning' && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusPlanning')}</span>}
+              {!isCreatingNewChat && searchStatus === 'searching' && <span className="ml-2 text-xs text-emerald-400">{t('aiChat.statusSearching')}</span>}
+              {!isCreatingNewChat && searchStatus === 'analyzing' && <span className="ml-2 text-xs text-purple-400">{t('aiChat.statusAnalyzing')}</span>}
+              {!isCreatingNewChat && searchStatus === 'generating' && <span className="ml-2 text-xs text-gray-400">{t('aiChat.statusGenerating')}</span>}
             </div>
           </div>
         )}
@@ -403,6 +399,31 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
             <div className="flex items-center gap-2 text-blue-400 text-sm font-medium">
               <ImageIcon size={20} />
               <span>Drop image or file here</span>
+            </div>
+          </div>
+        )}
+        {/* Initial model picker stays near the composer so it is visible while typing. */}
+        {showModelPicker && configuredProviders.length > 1 && (
+          <div className="mb-3 p-3 rounded-xl bg-blue-500/10 border border-blue-500/25 shadow-lg shadow-blue-950/20">
+            <p className="text-xs text-blue-200 mb-2 font-medium">Select a model for this project before sending:</p>
+            <div className="flex flex-wrap gap-1.5">
+              {configuredProviders.map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider(p);
+                    setShowModelPicker(false);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    selectedProvider === p
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                  }`}
+                >
+                  {PROVIDER_LABELS[p]}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -439,6 +460,7 @@ export default function AIChat({ onGenerate, isGenerating, chatHistoryRef, loade
           </div>
         )}
         <textarea
+          ref={textareaRef}
           placeholder={t('aiChat.placeholder')}
           className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-4 pr-12 py-3 text-sm focus:ring-1 focus:ring-blue-500 outline-none text-white placeholder-gray-500 transition-all resize-none custom-scrollbar"
           value={message}

@@ -48,6 +48,7 @@ export const translations = {
     fileManager: {
       sources: "Sources",
       addSources: "Add Sources",
+      dropFilesToUpload: "Drop files to upload them as sources",
       uploading: "Uploading...",
       noSources: "No sources yet.",
       fileType: "FILE",
@@ -127,6 +128,11 @@ export const translations = {
       includeSlidesOff: "AI follows the conversation history but ignores the current slides on screen",
       genericError: "Sorry, something went wrong while generating the slides.",
       noApiKey: "No API key configured. Please set your API key in Settings (gear icon, top right).",
+      statusSaving: "Saving & Creating...",
+      statusPlanning: "Planning...",
+      statusSearching: "Searching the web...",
+      statusAnalyzing: "Analyzing data...",
+      statusGenerating: "Generating slides...",
     },
     settings: {
       title: "Settings",
@@ -236,6 +242,7 @@ export const translations = {
     fileManager: {
       sources: "资源文件",
       addSources: "添加资源",
+      dropFilesToUpload: "松开即可上传为资源文件",
       uploading: "上传中...",
       noSources: "暂无资源",
       fileType: "文件",
@@ -315,6 +322,11 @@ export const translations = {
       includeSlidesOff: "AI 仅根据对话历史生成，忽略当前屏幕上的幻灯片",
       genericError: "抱歉，生成幻灯片时出错了。",
       noApiKey: "未配置 API 密钥。请在设置中（右上角齿轮图标）填写您的 API 密钥。",
+      statusSaving: "保存并创建中...",
+      statusPlanning: "规划中...",
+      statusSearching: "正在搜索网络...",
+      statusAnalyzing: "正在分析数据...",
+      statusGenerating: "正在生成幻灯片...",
     },
     settings: {
       title: "设置",

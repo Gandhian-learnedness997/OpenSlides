@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import FileManager from "./FileManager";
 import SlidePreview from "./SlidePreview";
 import AIChat from "./AIChat";
-import { generateSlides, planSearch, executeSearch, formatSearchContext, saveProjectContext, loadProjectContextFormatted, computePrice, loadConfig, getDefaultModel } from "../lib/ai";
+import { generateSlides, planSearch, executeSearch, formatSearchContext, analyzeData, formatAnalysisContext, saveProjectContext, loadProjectContextFormatted, computePrice, loadConfig, getDefaultModel } from "../lib/ai";
 import { useLanguage } from "../hooks/useLanguage";
 import { getSlideInfo, saveSlideInfo, saveState, loadStateContent, deleteState } from "../lib/versionControl";
 import { CheckCircle, AlertCircle } from "lucide-react";
@@ -32,6 +32,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const [uploadedFiles, setUploadedFiles] = useState<LocalFile[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<import("@/types").UrlSource[]>([]);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
+  const [pendingDraftMessage, setPendingDraftMessage] = useState<string | null>(null);
   const [projectProvider, setProjectProvider] = useState<AIProvider | null>(null);
   const { t } = useLanguage();
 
@@ -60,6 +61,31 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
   const isResizingLeft = useRef(false);
   const isResizingRight = useRef(false);
 
+  const isDataFile = (file: LocalFile): boolean => {
+    const name = file.name.toLowerCase();
+    return name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls');
+  };
+
+  const promptLooksDataDriven = (prompt: string): boolean =>
+    /\b(analy[sz]e|analysis|data|dataset|csv|xlsx|xls|chart|plot|visuali[sz]e|statistics|stats|trend|compare|comparison|distribution|correlation|survival|table|summary|summari[sz]e)\b/i.test(prompt);
+
+  const promptAsksForFreshAnalysis = (prompt: string): boolean =>
+    /\b(reanaly[sz]e|run again|rerun|new analysis|different|another|update|updated|fresh|recompute|calculate|breakdown by|group by|segment by)\b/i.test(prompt);
+
+  const isDefaultPlaceholderSlides = (html: string | null): boolean => {
+    if (!html) return true;
+    const normalized = html.replace(/\s+/g, ' ').trim();
+    if (!normalized) return true;
+
+    return (
+      normalized.includes('<title>OpenSlides</title>') &&
+      normalized.includes('fonts.googleapis.com/css2?family=Inter') &&
+      normalized.includes('--primary-color: #6c63ff') &&
+      normalized.includes('<div class="slides">') &&
+      (normalized.match(/<section\b/gi)?.length || 0) === 1
+    );
+  };
+
   const buildConversationSummary = (history: ChatMessage[], currentFiles: LocalFile[]): string => {
     const recent = history
       .filter(msg => !msg.isError)
@@ -84,8 +110,13 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     if (assistantMessages.length > 0) {
       lines.push(`Recent assistant work: ${assistantMessages.map(msg => msg.content).join(' | ')}`);
     }
-    if (currentFiles.length > 0) {
-      lines.push(`Project source files: ${currentFiles.map(file => file.name).join(', ')}`);
+    const generationFiles = currentFiles.filter((file) => !isDataFile(file));
+    const dataFiles = currentFiles.filter(isDataFile);
+    if (generationFiles.length > 0) {
+      lines.push(`Project source files: ${generationFiles.map(file => file.name).join(', ')}`);
+    }
+    if (dataFiles.length > 0) {
+      lines.push(`Project data files available for analytics: ${dataFiles.map(file => file.name).join(', ')}`);
     }
 
     return lines.join('\n');
@@ -158,14 +189,14 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
     return filtered;
   };
 
-  const [searchStatus, setSearchStatus] = useState<'idle' | 'planning' | 'searching' | 'generating'>('idle');
+  const [searchStatus, setSearchStatus] = useState<'idle' | 'planning' | 'searching' | 'analyzing' | 'generating'>('idle');
 
   const handleGenerateSlides = async (userPrompt: string = "", includeSlides: boolean = true, inlineAttachments?: import("@/types").ChatAttachment[], providerOverride?: import("@/types").AIProvider) => {
     setIsGenerating(true);
     try {
       const rawHistory = chatHistoryRef.current || [];
       const filteredHistory = filterChatHistory(rawHistory);
-      const currentSlidesForApi = includeSlides ? slidesData : null;
+      const currentSlidesForApi = includeSlides && !isDefaultPlaceholderSlides(slidesData) ? slidesData : null;
 
       // Planner decides: (1) whether to search the web, (2) whether to include existing context
       let searchContext = '';
@@ -209,6 +240,45 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             try {
               persistedContext = await loadProjectContextFormatted(project.id);
             } catch { /* non-fatal */ }
+          }
+
+          // Data Analytics Agent — analyze uploaded data files if planner says so
+          const hasExistingDataContext = persistedContext.includes('[Data Summaries]');
+          const shouldAnalyzeData = plan.needsAnalysis || (
+            uploadedFiles.some(isDataFile)
+            && promptLooksDataDriven(userPrompt)
+            && (!hasExistingDataContext || promptAsksForFreshAnalysis(userPrompt))
+          );
+          if (shouldAnalyzeData) {
+            try {
+              setSearchStatus('analyzing');
+              const analysisResult = await analyzeData(project.id, userPrompt, providerOverride);
+              if (analysisResult.usage) {
+                extraInputTokens += analysisResult.usage.inputTokens || 0;
+                extraOutputTokens += analysisResult.usage.outputTokens || 0;
+                extraCachedTokens += analysisResult.usage.cachedTokens || 0;
+                extraThinkingTokens += analysisResult.usage.thinkingTokens || 0;
+              }
+              if (!analysisResult.error) {
+                const analysisContext = formatAnalysisContext(analysisResult);
+                if (analysisContext) {
+                  searchContext = searchContext
+                    ? searchContext + '\n\n' + analysisContext
+                    : analysisContext;
+                }
+                // Persist analysis as dataSummaries
+                try {
+                  const summaries = [
+                    ...analysisResult.insights.map((insight: string, i: number) => ({ label: `Insight ${i + 1}`, data: insight })),
+                    ...analysisResult.charts.map((c: any) => ({ label: `Chart: ${c.title}`, data: JSON.stringify(c) })),
+                    ...analysisResult.tables.map((t: any) => ({ label: `Table: ${t.title}`, data: JSON.stringify(t) })),
+                  ];
+                  await saveProjectContext(project.id, { dataSummaries: summaries });
+                } catch { /* non-fatal */ }
+              }
+            } catch (err) {
+              console.error('[handleGenerateSlides] Analytics agent error:', err);
+            }
           }
         } catch (err) {
           console.error('[handleGenerateSlides] Search agent error:', err);
@@ -560,7 +630,7 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             onRenameVersion={handleRenameVersion}
             onDeleteVersion={handleDeleteVersion}
             onEditorChange={(html: string) => setSlidesData(html)}
-            onFixOverflow={(prompt: string) => setPendingMessage(prompt)}
+            onFixOverflow={(prompt: string) => setPendingDraftMessage(prompt)}
             projectId={project.id}
           />
         </div>
@@ -587,6 +657,8 @@ export default function ProjectDetail({ project, onBack }: ProjectDetailProps) {
             loadedHistory={loadedChatHistory}
             pendingMessage={pendingMessage}
             onPendingMessageConsumed={() => setPendingMessage(null)}
+            pendingDraftMessage={pendingDraftMessage}
+            onPendingDraftMessageConsumed={() => setPendingDraftMessage(null)}
             searchStatus={searchStatus}
             projectProvider={projectProvider}
             onProjectProviderChange={handleProjectProviderChange}

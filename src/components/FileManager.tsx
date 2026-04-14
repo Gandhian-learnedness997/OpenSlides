@@ -70,6 +70,7 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
   const [previewTextContent, setPreviewTextContent] = useState<string>("");
   const [previewTextLoading, setPreviewTextLoading] = useState<boolean>(false);
   const [previewTextError, setPreviewTextError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [sortOption, setSortOption] = useState<SortOption>(() => {
     if (typeof window === "undefined") return DEFAULT_SORT_OPTION;
 
@@ -208,13 +209,12 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
 
   const ALLOWED_EXTENSIONS = [
     "png", "jpeg", "jpg", "svg", "pdf",
-    "txt", "text", "csv", "md", "py", "sh",
+    "txt", "text", "csv", "xls", "xlsx", "md", "py", "sh",
   ];
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []);
+  const queueFilesForUpload = (incomingFiles: File[] | FileList) => {
+    const selectedFiles = Array.from(incomingFiles);
     if (selectedFiles.length === 0) return;
-    e.target.value = "";
 
     const validFiles = selectedFiles.filter((file) => {
       const extension = file.name.split(".").pop()?.toLowerCase() || "";
@@ -241,6 +241,51 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
         alert(error instanceof Error ? error.message : 'Failed to save files');
       });
     }
+  };
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    queueFilesForUpload(e.target.files || []);
+    e.target.value = "";
+  };
+
+  const eventHasFiles = (event: React.DragEvent<HTMLDivElement>): boolean =>
+    Array.from(event.dataTransfer.types).includes("Files");
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!eventHasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!eventHasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!eventHasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(false);
+    queueFilesForUpload(event.dataTransfer.files);
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const pastedFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (pastedFiles.length === 0) return;
+
+    event.preventDefault();
+    queueFilesForUpload(pastedFiles);
   };
 
   const buildRenamedUploadItems = (filesToUpload: File[]): PendingUploadItem[] => {
@@ -641,7 +686,27 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
   }, [previewTarget]);
 
   return (
-    <div className="flex flex-col h-full bg-background text-gray-200 relative">
+    <div
+      className={`flex flex-col h-full bg-background text-gray-200 relative outline-none ${
+        isDragOver ? "ring-2 ring-blue-400/70 ring-inset" : ""
+      }`}
+      tabIndex={0}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      onPaste={handlePaste}
+    >
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-3 z-30 flex items-center justify-center rounded-2xl border-2 border-dashed border-blue-400/80 bg-blue-950/35 backdrop-blur-sm">
+          <div className="rounded-2xl border border-blue-300/25 bg-[#0b1220]/90 px-5 py-4 text-center shadow-2xl">
+            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-blue-500/15 text-blue-200">
+              <Plus size={22} />
+            </div>
+            <p className="text-sm font-semibold text-white">{t('fileManager.addSources')}</p>
+            <p className="mt-1 text-xs text-blue-100/70">{t('fileManager.dropFilesToUpload')}</p>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between p-4 border-b border-border">
         <div className="h-10 flex items-center">
           <h2 className="font-semibold text-lg">{t('fileManager.sources')}</h2>
@@ -698,7 +763,7 @@ export default function FileManager({ projectId, onFilesChange, onUrlsChange }: 
             className="hidden"
             onChange={handleUpload}
             multiple
-            accept=".png,.jpeg,.jpg,.svg,.pdf,.txt,.text,.csv,.md,.py,.sh"
+            accept=".png,.jpeg,.jpg,.svg,.pdf,.txt,.text,.csv,.xls,.xlsx,.md,.py,.sh"
           />
         </label>
 

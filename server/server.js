@@ -3,7 +3,10 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { PDFParse } from 'pdf-parse';
+import XLSX from 'xlsx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -16,6 +19,9 @@ const PRICING_PATH = path.join(ROOT_DIR, 'config', 'pricing.json');
 const SAFE_PROJECT_ID_REGEX = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const STATE_ID_REGEX = /^(?:state|auto)_\d+$/;
 const ASSETS_DIRNAME = 'assets';
+const PDF_IMAGE_RENDER_SCALE = Number(process.env.PDF_IMAGE_RENDER_SCALE || 1.5);
+const PDF_IMAGE_RENDER_LIMIT = Number(process.env.PDF_IMAGE_RENDER_LIMIT || 24);
+const execFileAsync = promisify(execFile);
 
 
 // Ensure projects directory exists
@@ -48,6 +54,7 @@ const GEMINI_FILE_POLL_TIMEOUT_MS = 60000;
 const GEMINI_GENERATE_TIMEOUT_MS = 300000;
 const GEMINI_RETRY_DELAY_MS = 1200;
 const GEMINI_MAX_RETRIES = 3;
+const OPENAI_COMPATIBLE_TIMEOUT_MS = Number(process.env.OPENAI_COMPATIBLE_TIMEOUT_MS || 600000);
 const SUPPORTED_PROVIDERS = new Set(Object.keys(DEFAULT_BASE_URLS));
 
 function createHttpError(status, message) {
@@ -351,7 +358,7 @@ function deleteStoredProjectFile(projectId, fileName) {
 function loadProjectFilesForAI(projectId) {
   if (!getProject(projectId)) return [];
 
-  return loadStoredProjectFiles(projectId).map((file) => {
+  return loadStoredProjectFiles(projectId).filter(shouldAttachFileToGeneration).map((file) => {
     const buffer = fs.readFileSync(getProjectAssetPath(projectId, file.assetPath));
     return {
       name: file.name,
@@ -360,6 +367,61 @@ function loadProjectFilesForAI(projectId) {
       dataUrl: `data:${file.mimeType};base64,${buffer.toString('base64')}`,
     };
   });
+}
+
+// ============================================================
+// Data Analytics Agent — Schema Extraction
+// ============================================================
+
+function isDataFile(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  return ['.csv', '.xlsx', '.xls'].includes(ext);
+}
+
+function shouldAttachFileToGeneration(file) {
+  return !isDataFile(file.name);
+}
+
+function getDataFileSchemas(projectId) {
+  const files = loadStoredProjectFiles(projectId);
+  const dataFiles = files.filter(f => isDataFile(f.name));
+  const schemas = [];
+
+  for (const file of dataFiles) {
+    try {
+      const filePath = getProjectAssetPath(projectId, file.assetPath);
+      const buffer = fs.readFileSync(filePath);
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+      if (jsonData.length === 0) continue;
+
+      schemas.push({
+        fileName: file.name,
+        assetPath: file.assetPath,
+        columns: Object.keys(jsonData[0]),
+        rowCount: jsonData.length,
+        sampleRows: jsonData.slice(0, 5),
+        fileSize: file.size,
+      });
+    } catch (err) {
+      console.warn(`  [schema] Failed to parse ${file.name}: ${err.message}`);
+    }
+  }
+
+  return schemas;
+}
+
+function getDataFileSummaries(projectId) {
+  return loadStoredProjectFiles(projectId)
+    .filter((file) => isDataFile(file.name))
+    .map((file) => ({
+      name: file.name,
+      mimeType: file.mimeType,
+      size: file.size,
+    }));
 }
 
 function loadSettings() {
@@ -473,59 +535,101 @@ function isNativeOpenAIBaseUrl(baseUrl) {
   }
 }
 
-function needsPdfParsing(provider, baseUrl) {
+function shouldConvertPdfToImagesForOpenAICompatible(provider, baseUrl) {
   if (provider === 'claude' || provider === 'gemini') return false;
   if (provider === 'openai' && isNativeOpenAIBaseUrl(baseUrl)) return false;
   return true;
 }
 
-async function parsePdfFiles(files) {
-  const result = [];
+function getBase64FromDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') return '';
+  return dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+}
+
+async function renderPdfBase64ToPngFiles(base64Data, namePrefix = 'document') {
+  if (!base64Data) return [];
+
+  const parser = new PDFParse({ data: Buffer.from(base64Data, 'base64') });
+  try {
+    const screenshot = await parser.getScreenshot({
+      scale: PDF_IMAGE_RENDER_SCALE,
+      first: 1,
+      last: PDF_IMAGE_RENDER_LIMIT,
+    });
+
+    return (screenshot.pages || [])
+      .filter((page) => page?.data)
+      .map((page, index) => {
+        const buffer = Buffer.from(page.data);
+        return {
+          name: `${namePrefix} page ${index + 1}.png`,
+          mimeType: 'image/png',
+          size: buffer.length,
+          dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+          data: buffer.toString('base64'),
+        };
+      });
+  } finally {
+    parser.destroy();
+  }
+}
+
+async function convertProjectPdfsToImagesForOpenAICompatible(files) {
+  if (!Array.isArray(files) || files.length === 0) return files;
+
+  const converted = [];
   for (const file of files) {
-    if (file.mimeType === 'application/pdf') {
-      try {
-        const base64Data = file.dataUrl.replace(/^data:[^;]+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        const parser = new PDFParse({ data: buffer });
+    if (file.mimeType !== 'application/pdf') {
+      converted.push(file);
+      continue;
+    }
 
-        const textResult = await parser.getText();
-        const fullText = textResult.text || textResult.pages?.map(p => p.text).join('\n\n') || '';
-
-        // Add extracted text as a synthetic text file
-        result.push({
-          name: file.name,
-          mimeType: 'text/plain',
-          size: fullText.length,
-          dataUrl: `data:text/plain;base64,${Buffer.from(fullText).toString('base64')}`,
-          _parsedText: fullText,
-        });
-
-        // Extract images
-        const imgResult = await parser.getImage();
-        for (const page of imgResult.pages || []) {
-          for (const img of page.images || []) {
-            if (img.dataUrl) {
-              result.push({
-                name: `${file.name}_${img.name || 'img'}.png`,
-                mimeType: 'image/png',
-                size: img.data?.length || 0,
-                dataUrl: img.dataUrl,
-              });
-            }
-          }
-        }
-
-        console.log(`  [pdf-parse] ${file.name}: ${textResult.total} pages, ${fullText.length} chars, ${imgResult.pages?.reduce((n, p) => n + (p.images?.length || 0), 0) || 0} images`);
-        parser.destroy();
-      } catch (err) {
-        console.warn(`  [pdf-parse] Failed to parse ${file.name}: ${err.message}`);
-        // Skip the PDF if parsing fails
-      }
-    } else {
-      result.push(file);
+    try {
+      const pageImages = await renderPdfBase64ToPngFiles(getBase64FromDataUrl(file.dataUrl), file.name || 'document');
+      converted.push(...pageImages);
+      console.log(`  [pdf-image] ${file.name || 'PDF'}: rendered ${pageImages.length} page image(s)`);
+    } catch (error) {
+      console.warn(`  [pdf-image] Failed to render ${file.name || 'PDF'}: ${error.message}`);
     }
   }
-  return result;
+
+  return converted;
+}
+
+async function convertInlinePdfsToImagesForOpenAICompatible(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+
+  const convertedMessages = [];
+  for (const msg of messages) {
+    if (!Array.isArray(msg.files) || msg.files.length === 0) {
+      convertedMessages.push(msg);
+      continue;
+    }
+
+    const convertedFiles = [];
+    for (const file of msg.files) {
+      if (file.mimeType !== 'application/pdf') {
+        convertedFiles.push(file);
+        continue;
+      }
+
+      try {
+        const pageImages = await renderPdfBase64ToPngFiles(file.data, file.name || 'attached PDF');
+        convertedFiles.push(...pageImages.map((page) => ({
+          name: page.name,
+          mimeType: page.mimeType,
+          data: page.data,
+        })));
+        console.log(`  [pdf-image] inline ${file.name || 'PDF'}: rendered ${pageImages.length} page image(s)`);
+      } catch (error) {
+        console.warn(`  [pdf-image] Failed to render inline ${file.name || 'PDF'}: ${error.message}`);
+      }
+    }
+
+    convertedMessages.push({ ...msg, files: convertedFiles });
+  }
+
+  return convertedMessages;
 }
 
 app.post('/api/generate', async (req, res) => {
@@ -572,14 +676,6 @@ app.post('/api/generate', async (req, res) => {
     return res.status(error.status || 400).json({ error: error.message || 'Invalid base URL' });
   }
 
-  // Parse PDFs for non-native providers that don't support direct PDF upload
-  let processedFiles = files;
-  if (needsPdfParsing(provider, base) && files.some(f => f.mimeType === 'application/pdf')) {
-    console.log(`  [pdf-parse] Parsing PDFs for non-native provider ${provider}...`);
-    processedFiles = await parsePdfFiles(files);
-    console.log(`  [pdf-parse] ${files.length} files → ${processedFiles.length} files after parsing`);
-  }
-
   const startTime = Date.now();
   try {
     let result;
@@ -590,7 +686,13 @@ app.post('/api/generate', async (req, res) => {
     } else if (provider === 'openai' && isNativeOpenAIBaseUrl(base)) {
       result = await callOpenAINative(base, apiKey, model, projectId, system, messages, temperature, files);
     } else {
-      result = await callOpenAICompatible(base, apiKey, model, system, messages, temperature, processedFiles, provider);
+      const compatibleFiles = shouldConvertPdfToImagesForOpenAICompatible(provider, base)
+        ? await convertProjectPdfsToImagesForOpenAICompatible(files)
+        : files;
+      const compatibleMessages = shouldConvertPdfToImagesForOpenAICompatible(provider, base)
+        ? await convertInlinePdfsToImagesForOpenAICompatible(messages)
+        : messages;
+      result = await callOpenAICompatible(base, apiKey, model, system, compatibleMessages, temperature, compatibleFiles, provider);
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const usage = result.usage || {};
@@ -1437,12 +1539,6 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
           type: 'image_url',
           image_url: { url: f.dataUrl },
         });
-      } else if (f._parsedText) {
-        // Parsed PDF text — inject as text block
-        projectFileContent.push({
-          type: 'text',
-          text: `[Parsed content from ${f.name}]\n${f._parsedText}`,
-        });
       } else if (f.mimeType.startsWith('text/') || f.mimeType === 'application/json' || f.mimeType === 'application/xml') {
         // Plain text files — decode base64 and inject as text
         const base64 = f.dataUrl.replace(/^data:[^;]+;base64,/, '');
@@ -1475,28 +1571,6 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
             type: 'image_url',
             image_url: { url: `data:${f.mimeType};base64,${f.data}` },
           });
-        } else if (f.mimeType === 'application/pdf') {
-          // Parse inline PDF to text + images for compatible providers
-          try {
-            const buffer = Buffer.from(f.data, 'base64');
-            const parser = new PDFParse({ data: buffer });
-            const textResult = await parser.getText();
-            const fullText = textResult.text || textResult.pages?.map(p => p.text).join('\n\n') || '';
-            if (fullText) {
-              content.push({ type: 'text', text: `[Parsed content from ${f.name || 'file'}]\n${fullText}` });
-            }
-            const imgResult = await parser.getImage();
-            for (const page of imgResult.pages || []) {
-              for (const img of page.images || []) {
-                if (img.dataUrl) {
-                  content.push({ type: 'image_url', image_url: { url: img.dataUrl } });
-                }
-              }
-            }
-            parser.destroy();
-          } catch (err) {
-            console.warn(`[openai-compat] Failed to parse inline PDF ${f.name}: ${err.message}`);
-          }
         } else if (f.mimeType.startsWith('text/') || f.mimeType === 'application/json' || f.mimeType === 'application/xml') {
           const text = Buffer.from(f.data, 'base64').toString('utf-8');
           content.push({ type: 'text', text: `[Content from ${f.name || 'file'}]\n${text}` });
@@ -1545,16 +1619,26 @@ async function callOpenAICompatible(baseUrl, apiKey, model, systemText, messages
         console.warn(`[openai-compat] retry ${attempt}/${MAX_RETRIES} after ${delay} ms`);
         await new Promise(r => setTimeout(r, delay));
       }
-      const response = await fetch(`${url}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: requestBody,
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`API error ${response.status}: ${errText}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(new Error(`OpenAI-compatible request timed out after ${OPENAI_COMPATIBLE_TIMEOUT_MS} ms`)),
+        OPENAI_COMPATIBLE_TIMEOUT_MS
+      );
+      try {
+        const response = await fetch(`${url}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: requestBody,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`API error ${response.status}: ${errText}`);
+        }
+        data = await response.json();
+      } finally {
+        clearTimeout(timeout);
       }
-      data = await response.json();
       lastError = null;
       break;
     } catch (error) {
@@ -1877,7 +1961,8 @@ app.put('/api/projects/:id/context', (req, res) => {
     const newSearchCount = Array.isArray(req.body?.searchResults) ? req.body.searchResults.length : 0;
     const newDataCount = Array.isArray(req.body?.dataSummaries) ? req.body.dataSummaries.length : 0;
 
-    // Merge: append new search results (deduplicate by URL), append data summaries
+    // Merge search results by URL. Keep accumulated data summaries so the planner
+    // and generator can reuse previous analysis without re-running scripts.
     let addedSearch = 0;
     if (Array.isArray(req.body?.searchResults)) {
       const existingUrls = new Set((existing.searchResults || []).map(r => r.url));
@@ -1890,7 +1975,18 @@ app.put('/api/projects/:id/context', (req, res) => {
       }
     }
     if (Array.isArray(req.body?.dataSummaries)) {
-      existing.dataSummaries = [...(existing.dataSummaries || []), ...req.body.dataSummaries];
+      const existingData = Array.isArray(existing.dataSummaries) ? existing.dataSummaries : [];
+      const seen = new Set(existingData.map((entry) => `${entry.label}\n${entry.data}`));
+      for (const entry of req.body.dataSummaries) {
+        const label = typeof entry?.label === 'string' ? entry.label : '';
+        const data = typeof entry?.data === 'string' ? entry.data : '';
+        const key = `${label}\n${data}`;
+        if (label && data && !seen.has(key)) {
+          existingData.push({ label, data });
+          seen.add(key);
+        }
+      }
+      existing.dataSummaries = existingData.slice(-30);
     }
 
     writeJsonFile(ctxPath, existing);
@@ -2178,14 +2274,16 @@ app.post('/api/search', async (req, res) => {
 // Planner Agent (decides if search is needed)
 // ============================================================
 
-const PLANNER_SYSTEM_PROMPT = `You are a planning assistant. Given a user's request to generate or edit a presentation, decide two things:
+const PLANNER_SYSTEM_PROMPT = `You are a planning assistant. Given a user's request to generate or edit a presentation, decide three things:
 1. Whether web search is needed to gather new information
 2. Whether existing project context (previous research, data summaries) should be included
+3. Whether data analysis is needed on uploaded data files (csv, xlsx)
 
 Return JSON only, no other text:
 {
   "needsSearch": true/false,
   "needsContext": true/false,
+  "needsAnalysis": true/false,
   "queries": ["query1", "query2"],
   "reasoning": "brief explanation"
 }
@@ -2213,6 +2311,17 @@ needsContext = false when:
 - The user is doing simple text edits that don't need factual backing
 - There is no existing context available
 
+needsAnalysis = true when:
+- The project has uploaded data files (csv, xlsx) AND
+- The user wants data-driven content: charts, statistics, trends, comparisons, summaries from the data
+- The user mentions analyzing, visualizing, or presenting their data
+
+needsAnalysis = false when:
+- There are no data files in the project
+- The user is doing visual/style edits only
+- The data has already been analyzed (existing context contains data summaries)
+- The user provides all content themselves and doesn't reference data files
+
 The user message may include "[Existing project context topics: ...]" listing topics already researched. Do NOT search for topics already covered unless the user explicitly asks for updated information. Only search for NEW topics not yet in the context.
 
 Generate 1-3 simple, direct search queries. When the topic is unfamiliar or unknown to you, use straightforward queries like "What is [topic]?" or "[topic] introduction" — do NOT infer, guess, or expand the topic into something else. Never add year numbers, assumed project names, or speculative details to queries. Keep queries short and factual.`;
@@ -2221,24 +2330,33 @@ app.post('/api/plan', async (req, res) => {
   const settings = loadSettings();
 
   console.log(`\n\x1b[35m━━━ [Planner Agent] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
-
-  // If no Tavily key, skip planning entirely
-  if (!settings.tavilyApiKey) {
-    console.log(`  \x1b[33m⊘ No Tavily API key — skipping planning\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'No Tavily API key configured' });
+  const canSearchWeb = Boolean(settings.tavilyApiKey);
+  if (!canSearchWeb) {
+    console.log(`  \x1b[33m⊘ No Tavily API key — planning without web search\x1b[0m`);
   }
 
   const userPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : '';
   if (!userPrompt.trim()) {
     console.log(`  \x1b[33m⊘ Empty prompt — skipping\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'Empty prompt' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'Empty prompt' });
   }
 
+  const projectId = typeof req.body.projectId === 'string' && isSafeProjectId(req.body.projectId)
+    ? req.body.projectId
+    : null;
+  const dataFiles = projectId ? getDataFileSummaries(projectId) : [];
+  const planningPrompt = dataFiles.length > 0
+    ? `${userPrompt}\n\n[Uploaded data files in this project]\n${dataFiles.map((file) => `- ${file.name} (${file.mimeType}, ${file.size} bytes)`).join('\n')}\n\nIf the user asks for data analysis, charts, statistics, trends, comparisons, summaries, or a data-driven presentation, set needsAnalysis=true.`
+    : userPrompt;
+
   // Show prompt (truncated) and whether it has existing context info
-  const hasExistingContext = userPrompt.includes('[Existing project context topics:');
+  const hasExistingContext = planningPrompt.includes('[Existing project context topics:');
   const promptPreview = userPrompt.replace(/\n\n\[Existing project context topics:[\s\S]*$/, '').slice(0, 150);
   console.log(`  Prompt:      "${promptPreview}${promptPreview.length >= 150 ? '...' : ''}"`);
   console.log(`  Has context: ${hasExistingContext ? 'yes' : 'no'}`);
+  if (dataFiles.length > 0) {
+    console.log(`  Data files:  ${dataFiles.map((file) => file.name).join(', ')}`);
+  }
 
   const provider = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
     ? req.body.provider
@@ -2248,14 +2366,14 @@ app.post('/api/plan', async (req, res) => {
 
   if (!apiKey) {
     console.log(`  \x1b[31m✗ No API key for ${provider}\x1b[0m`);
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'No LLM API key for planning' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'No LLM API key for planning' });
   }
 
   let base;
   try {
     base = sanitizeBaseUrl(providerCfg.baseUrl || '', provider);
   } catch {
-    return res.json({ needsSearch: false, needsContext: false, queries: [], reasoning: 'Invalid base URL' });
+    return res.json({ needsSearch: false, needsContext: false, needsAnalysis: false, queries: [], reasoning: 'Invalid base URL' });
   }
 
   const model = (typeof req.body.model === 'string' && req.body.model.trim())
@@ -2263,7 +2381,7 @@ app.post('/api/plan', async (req, res) => {
     : (providerCfg.model || getDefaultModel(provider));
   console.log(`  Provider:    ${provider} (${model})`);
 
-  const messages = [{ role: 'user', content: userPrompt }];
+  const messages = [{ role: 'user', content: planningPrompt }];
   const startTime = Date.now();
 
   try {
@@ -2286,11 +2404,15 @@ app.post('/api/plan', async (req, res) => {
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       const plannerUsage = result.usage || {};
+      const plannerWantedSearch = !!parsed.needsSearch;
       const plan = {
-        needsSearch: !!parsed.needsSearch,
+        needsSearch: canSearchWeb && plannerWantedSearch,
         needsContext: parsed.needsContext !== false,
-        queries: Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
-        reasoning: String(parsed.reasoning || ''),
+        needsAnalysis: !!parsed.needsAnalysis,
+        queries: canSearchWeb && Array.isArray(parsed.queries) ? parsed.queries.map(String).slice(0, 3) : [],
+        reasoning: !canSearchWeb && plannerWantedSearch
+          ? `${String(parsed.reasoning || '')} Web search was requested by the planner, but Tavily is not configured, so search was skipped.`
+          : String(parsed.reasoning || ''),
         usage: {
           inputTokens: plannerUsage.inputTokens || 0,
           outputTokens: plannerUsage.outputTokens || 0,
@@ -2301,8 +2423,9 @@ app.post('/api/plan', async (req, res) => {
 
       console.log(`  \x1b[32m✓ Planned in ${elapsed}s\x1b[0m`);
       console.log(`  Decision:`);
-      console.log(`    needsSearch:  ${plan.needsSearch ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
-      console.log(`    needsContext: ${plan.needsContext ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsSearch:   ${plan.needsSearch ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsContext:  ${plan.needsContext ? '\x1b[33myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
+      console.log(`    needsAnalysis: ${plan.needsAnalysis ? '\x1b[34myes\x1b[0m' : '\x1b[90mno\x1b[0m'}`);
       if (plan.queries.length > 0) {
         console.log(`    queries:`);
         plan.queries.forEach((q, i) => console.log(`      ${i + 1}. "${q}"`));
@@ -2314,13 +2437,447 @@ app.post('/api/plan', async (req, res) => {
     } else {
       console.log(`  \x1b[31m✗ Could not parse planner response (${elapsed}s)\x1b[0m`);
       console.log(`  Raw response:  "${text.slice(0, 200)}"`);
-      res.json({ needsSearch: false, needsContext: true, queries: [], reasoning: 'Could not parse planner response' });
+      res.json({ needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: 'Could not parse planner response' });
     }
   } catch (error) {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.error(`  \x1b[31m✗ Planner failed after ${elapsed}s: ${error.message}\x1b[0m`);
-    res.json({ needsSearch: false, queries: [], reasoning: error.message || 'Planning failed' });
+    res.json({ needsSearch: false, needsContext: true, needsAnalysis: false, queries: [], reasoning: error.message || 'Planning failed' });
   }
+});
+
+// ============================================================
+// Data Analytics Agent
+// ============================================================
+
+const ANALYST_SYSTEM_PROMPT = `You are a data analyst. You will receive:
+1. Schema information about data files (column names, row count, sample rows)
+2. The user's request for what kind of presentation/analysis they want
+
+Your job: write a self-contained Python script that reads the data file(s) and outputs a JSON analysis result to stdout.
+
+RULES:
+- The script receives the file path as the first command-line argument (sys.argv[1]).
+- For .xlsx/.xls files, use openpyxl. For .csv files, use the csv module from stdlib.
+- The script MUST print ONLY a single JSON object to stdout. No other output.
+- The JSON output MUST follow this exact structure:
+
+{
+  "tables": [
+    {
+      "title": "Table Title",
+      "headers": ["Col1", "Col2", "Col3"],
+      "rows": [["val1", 2, "val3"], ...]
+    }
+  ],
+  "charts": [
+    {
+      "title": "Chart Title",
+      "type": "bar|line|pie|doughnut|radar",
+      "labels": ["Label1", "Label2", ...],
+      "datasets": [
+        {"label": "Series Name", "data": [1, 2, 3, ...]}
+      ]
+    }
+  ],
+  "insights": [
+    "Key finding 1",
+    "Key finding 2"
+  ]
+}
+
+GUIDELINES:
+- Produce 2-4 charts that best visualize the data for a presentation.
+- Produce 1-2 tables with the most important summary data (max 8 rows each).
+- Produce 3-5 key insights as short bullet-point strings.
+- For large datasets, aggregate and summarize — do NOT output all rows.
+- Choose chart types that match the data: bar for comparisons, line for trends over time, pie for proportions.
+- Keep labels short (truncate to ~20 chars if needed).
+- Limit chart data points to 12 max per dataset — group/aggregate if more.
+- Handle missing values gracefully (skip or fill with 0).
+- The script must be self-contained. Only use: openpyxl (for xlsx), csv (stdlib), json (stdlib), sys (stdlib), collections (stdlib), statistics (stdlib), datetime (stdlib).
+- Do NOT use pandas, numpy, matplotlib, or any other heavy library.
+- Output ONLY the JSON. No print statements for debugging. No stderr output.
+
+Output ONLY a python code block with the script. No explanation before or after.`;
+
+function extractPythonScriptFromResponse(text) {
+  const fencedMatch = String(text || '').match(/```(?:python|py)?\s*([\s\S]*?)```/i);
+  if (fencedMatch) return fencedMatch[1].trim();
+
+  const trimmed = String(text || '').trim();
+  if (/^(import|from)\s+/m.test(trimmed) || trimmed.includes('def ')) {
+    return trimmed;
+  }
+
+  return '';
+}
+
+function writeAnalyticsArtifact(runDir, name, value) {
+  const output = typeof value === 'string'
+    ? value
+    : JSON.stringify(value, null, 2);
+  fs.writeFileSync(path.join(runDir, name), output, 'utf-8');
+}
+
+const MAX_ANALYSIS_SCRIPT_ATTEMPTS = Number(process.env.MAX_ANALYSIS_SCRIPT_ATTEMPTS || 3);
+
+async function callAnalystModel(providerName, base, apiKey, model, messages, temperature = 0.2) {
+  if (providerName === 'claude') {
+    return callClaude(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  if (providerName === 'gemini') {
+    return callGemini(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  if (providerName === 'openai' && isNativeOpenAIBaseUrl(base)) {
+    return callOpenAINative(base, apiKey, model, 'analyst', ANALYST_SYSTEM_PROMPT, messages, temperature, []);
+  }
+  return callOpenAICompatible(base, apiKey, model, ANALYST_SYSTEM_PROMPT, messages, temperature, [], providerName);
+}
+
+function getUvInlineMetadata(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  const needsOpenpyxl = ['.xlsx', '.xls'].includes(ext);
+  return needsOpenpyxl
+    ? `# /// script\n# requires-python = ">=3.10"\n# dependencies = ["openpyxl"]\n# ///\n\n`
+    : `# /// script\n# requires-python = ">=3.10"\n# dependencies = []\n# ///\n\n`;
+}
+
+function summarizeAnalyticsStderr(stderr) {
+  if (!stderr || !stderr.trim()) return '';
+  return stderr.split('\n').filter(l =>
+    !l.trim().startsWith('Resolved') && !l.trim().startsWith('Prepared') &&
+    !l.trim().startsWith('Installed') && !l.trim().startsWith('Audited') &&
+    !l.trim().startsWith('Updated') && !l.trim().startsWith('Using') &&
+    !l.trim().startsWith('Creating') && !l.trim().startsWith('reading') &&
+    l.trim()
+  ).join('\n');
+}
+
+function parseAnalysisStdout(stdout) {
+  const jsonMatch = String(stdout || '').match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return { ok: false, stage: 'parse-output', error: 'Analysis script produced no JSON output' };
+  }
+  try {
+    return { ok: true, result: JSON.parse(jsonMatch[0]) };
+  } catch (parseError) {
+    return { ok: false, stage: 'parse-json', error: parseError.message };
+  }
+}
+
+async function runAnalysisScriptAttempt({ runDir, attempt, script, inlineMetadata, dataFilePath }) {
+  const scriptContent = inlineMetadata + script;
+  const scriptPath = path.join(runDir, `analysis_attempt_${attempt}.py`);
+  fs.writeFileSync(scriptPath, scriptContent);
+  fs.writeFileSync(path.join(runDir, 'analysis.py'), scriptContent);
+
+  const execStart = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync('uv', ['run', '--script', scriptPath, dataFilePath], {
+      timeout: 60000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stdout.txt`, stdout || '');
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stderr.txt`, stderr || '');
+    writeAnalyticsArtifact(runDir, 'stdout.txt', stdout || '');
+    writeAnalyticsArtifact(runDir, 'stderr.txt', stderr || '');
+
+    const realErrors = summarizeAnalyticsStderr(stderr);
+    if (realErrors) {
+      console.warn(`  [attempt ${attempt} stderr] ${realErrors.slice(0, 300)}`);
+    }
+
+    const parsed = parseAnalysisStdout(stdout);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        stage: parsed.stage,
+        error: parsed.error,
+        stdout: stdout || '',
+        stderr: stderr || '',
+        script,
+        scriptPath,
+        execElapsed,
+      };
+    }
+
+    return {
+      ok: true,
+      result: parsed.result,
+      stdout: stdout || '',
+      stderr: stderr || '',
+      script,
+      scriptPath,
+      execElapsed,
+    };
+  } catch (execErr) {
+    const execElapsed = ((Date.now() - execStart) / 1000).toFixed(1);
+    const stdout = execErr.stdout || '';
+    const stderr = execErr.stderr || '';
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stdout.txt`, stdout);
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_stderr.txt`, stderr);
+    writeAnalyticsArtifact(runDir, 'stdout.txt', stdout);
+    writeAnalyticsArtifact(runDir, 'stderr.txt', stderr);
+
+    return {
+      ok: false,
+      stage: 'execute',
+      error: execErr.message,
+      stdout,
+      stderr,
+      script,
+      scriptPath,
+      execElapsed,
+    };
+  }
+}
+
+function buildAnalysisRepairMessages({ userPrompt, schemaDescription, previousScript, failure, attempt, maxAttempts }) {
+  return [{
+    role: 'user',
+    content: `The previous analytics Python script failed. Repair it.
+
+User's presentation request:
+"${userPrompt}"
+
+Data files available for analysis:
+
+${schemaDescription}
+
+Failed attempt: ${attempt - 1} of ${maxAttempts}
+Failure stage: ${failure.stage}
+Error:
+${failure.error || '(none)'}
+
+stderr:
+${failure.stderr || '(empty)'}
+
+stdout:
+${failure.stdout || '(empty)'}
+
+Previous Python script:
+\`\`\`python
+${previousScript}
+\`\`\`
+
+Return a corrected Python script only.
+Requirements:
+- Preserve the user's analysis goal.
+- Fix the exact syntax/runtime/JSON-output problem shown above.
+- The script receives the data file path as sys.argv[1].
+- Print ONLY one JSON object to stdout.
+- The JSON object must contain "tables", "charts", and "insights" arrays.
+- Do not print debugging text, markdown, or explanations.
+- Use only the allowed libraries from the original instructions.`,
+  }];
+}
+
+app.post('/api/analyze', async (req, res) => {
+  const settings = loadSettings();
+
+  console.log(`\n\x1b[34m━━━ [Analytics Agent] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m`);
+
+  const projectId = typeof req.body.projectId === 'string' && isSafeProjectId(req.body.projectId)
+    ? req.body.projectId : null;
+  const userPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : '';
+  const providerName = typeof req.body.provider === 'string' && SUPPORTED_PROVIDERS.has(req.body.provider)
+    ? req.body.provider : settings.activeProvider;
+
+  if (!projectId) {
+    console.log(`  \x1b[31m✗ No valid project ID\x1b[0m`);
+    return res.status(400).json({ error: 'Invalid project ID' });
+  }
+
+  // Step A: Extract schemas from data files
+  const schemas = getDataFileSchemas(projectId);
+  if (schemas.length === 0) {
+    console.log(`  \x1b[33m⊘ No data files found in project\x1b[0m`);
+    return res.json({ tables: [], charts: [], insights: [], error: 'No data files found' });
+  }
+
+  console.log(`  Project:     ${projectId}`);
+  console.log(`  Data files:  ${schemas.map(s => `${s.fileName} (${s.rowCount} rows, ${s.columns.length} cols)`).join(', ')}`);
+
+  const analyticsRoot = path.join(getProjectDir(projectId), '_analytics');
+  fs.mkdirSync(analyticsRoot, { recursive: true });
+  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+  const runDir = path.join(analyticsRoot, runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  writeAnalyticsArtifact(runDir, 'request.txt', userPrompt);
+  writeAnalyticsArtifact(runDir, 'schemas.json', schemas);
+  console.log(`  Run dir:     ${runDir}`);
+
+  const providerCfg = getProviderConfig(settings, providerName);
+  const apiKey = providerCfg.apiKey;
+  if (!apiKey) {
+    console.log(`  \x1b[31m✗ No API key for ${providerName}\x1b[0m`);
+    writeAnalyticsArtifact(runDir, 'error.json', { stage: 'config', error: `No API key for ${providerName}` });
+    return res.status(400).json({ error: `No API key for ${providerName}` });
+  }
+
+  let base;
+  try {
+    base = sanitizeBaseUrl(providerCfg.baseUrl || '', providerName);
+  } catch {
+    writeAnalyticsArtifact(runDir, 'error.json', { stage: 'config', error: 'Invalid base URL' });
+    return res.status(400).json({ error: 'Invalid base URL' });
+  }
+
+  const model = (typeof req.body.model === 'string' && req.body.model.trim())
+    ? req.body.model.trim()
+    : (providerCfg.model || getDefaultModel(providerName));
+
+  // Step B: Build prompt with schema info — LLM only sees structure, not full data
+  const schemaDescription = schemas.map(s => {
+    const sampleStr = JSON.stringify(s.sampleRows, null, 2);
+    return `File: "${s.fileName}"
+Columns: ${s.columns.join(', ')}
+Row count: ${s.rowCount}
+File size: ${s.fileSize} bytes
+Sample rows (first 5):
+${sampleStr}`;
+  }).join('\n\n');
+
+  const messages = [{
+    role: 'user',
+    content: `User's presentation request: "${userPrompt}"
+
+Data files available for analysis:
+
+${schemaDescription}
+
+Write a Python script to analyze this data and produce charts, tables, and insights suitable for a presentation about this topic. The script will receive the file path as sys.argv[1].${schemas.length === 1 ? '' : ' Process the primary/most relevant file for the user\'s request.'}`,
+  }];
+
+  console.log(`  Provider:    ${providerName} (${model})`);
+
+  const targetSchema = schemas[0];
+  const dataFilePath = getProjectAssetPath(projectId, targetSchema.assetPath);
+  const inlineMetadata = getUvInlineMetadata(targetSchema.fileName);
+  console.log(`  Data file:   ${dataFilePath}`);
+
+  let currentMessages = messages;
+  let previousScript = '';
+  let lastFailure = null;
+  const attempts = [];
+  const totalUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    thinkingTokens: 0,
+  };
+
+  for (let attempt = 1; attempt <= MAX_ANALYSIS_SCRIPT_ATTEMPTS; attempt++) {
+    const llmStart = Date.now();
+    let result;
+    try {
+      result = await callAnalystModel(providerName, base, apiKey, model, currentMessages, attempt === 1 ? 0.2 : 0.1);
+    } catch (err) {
+      console.error(`  \x1b[31m✗ LLM ${attempt === 1 ? 'generation' : 'repair'} failed: ${err.message}\x1b[0m`);
+      writeAnalyticsArtifact(runDir, 'error.json', {
+        stage: attempt === 1 ? 'llm' : 'llm-repair',
+        attempt,
+        error: err.message,
+        attempts,
+      });
+      return res.status(500).json({ error: `LLM failed: ${err.message}` });
+    }
+
+    const usage = result.usage || {};
+    totalUsage.inputTokens += usage.inputTokens || 0;
+    totalUsage.outputTokens += usage.outputTokens || 0;
+    totalUsage.cachedTokens += usage.cachedTokens || 0;
+    totalUsage.thinkingTokens += usage.thinkingTokens || 0;
+
+    const llmElapsed = ((Date.now() - llmStart) / 1000).toFixed(1);
+    console.log(`  LLM script:  ${attempt === 1 ? 'generated' : `repaired attempt ${attempt}`} in ${llmElapsed}s`);
+    writeAnalyticsArtifact(runDir, attempt === 1 ? 'model-response.txt' : `attempt_${attempt}_model-response.txt`, result.text || '');
+    writeAnalyticsArtifact(runDir, `attempt_${attempt}_model-response.txt`, result.text || '');
+
+    const pythonScript = extractPythonScriptFromResponse(result.text || '');
+    if (!pythonScript) {
+      previousScript = result.text || '';
+      lastFailure = {
+        stage: attempt === 1 ? 'extract-script' : 'extract-repair-script',
+        error: 'LLM did not produce a Python script',
+        stdout: '',
+        stderr: '',
+      };
+      attempts.push({ attempt, stage: lastFailure.stage, error: lastFailure.error });
+      writeAnalyticsArtifact(runDir, `attempt_${attempt}_error.json`, lastFailure);
+    } else {
+      previousScript = pythonScript;
+      const runResult = await runAnalysisScriptAttempt({
+        runDir,
+        attempt,
+        script: pythonScript,
+        inlineMetadata,
+        dataFilePath,
+      });
+      console.log(`  Script:      ${runResult.scriptPath}`);
+
+      if (runResult.ok) {
+        const analysisResult = runResult.result;
+        writeAnalyticsArtifact(runDir, 'result.json', analysisResult);
+        const tables = Array.isArray(analysisResult.tables) ? analysisResult.tables : [];
+        const charts = Array.isArray(analysisResult.charts) ? analysisResult.charts : [];
+        const insights = Array.isArray(analysisResult.insights) ? analysisResult.insights : [];
+
+        console.log(`  \x1b[32m✓ Analysis complete in ${runResult.execElapsed}s on attempt ${attempt}\x1b[0m`);
+        console.log(`  Output:      ${tables.length} table(s), ${charts.length} chart(s), ${insights.length} insight(s)`);
+
+        return res.json({
+          tables,
+          charts,
+          insights,
+          artifactPath: path.relative(getProjectDir(projectId), runDir),
+          usage: totalUsage,
+        });
+      }
+
+      lastFailure = {
+        stage: runResult.stage,
+        error: runResult.error,
+        stdout: runResult.stdout,
+        stderr: runResult.stderr,
+        execElapsed: runResult.execElapsed,
+      };
+      attempts.push({
+        attempt,
+        stage: runResult.stage,
+        error: runResult.error,
+        execElapsed: runResult.execElapsed,
+      });
+      writeAnalyticsArtifact(runDir, `attempt_${attempt}_error.json`, lastFailure);
+      console.error(`  \x1b[31m✗ Attempt ${attempt} failed at ${runResult.stage} after ${runResult.execElapsed}s\x1b[0m`);
+      console.error(`  Error:       ${String(runResult.error || '').slice(0, 500)}`);
+      if (runResult.stderr) console.error(`  [stderr]     ${runResult.stderr.slice(0, 500)}`);
+      if (runResult.stdout) console.error(`  [stdout]     ${runResult.stdout.slice(0, 500)}`);
+    }
+
+    if (attempt < MAX_ANALYSIS_SCRIPT_ATTEMPTS) {
+      console.log(`  Repair:      requesting corrected script (attempt ${attempt + 1}/${MAX_ANALYSIS_SCRIPT_ATTEMPTS})`);
+      currentMessages = buildAnalysisRepairMessages({
+        userPrompt,
+        schemaDescription,
+        previousScript,
+        failure: lastFailure,
+        attempt: attempt + 1,
+        maxAttempts: MAX_ANALYSIS_SCRIPT_ATTEMPTS,
+      });
+    }
+  }
+
+  const finalError = lastFailure?.error || 'Analysis script failed';
+  writeAnalyticsArtifact(runDir, 'error.json', {
+    stage: lastFailure?.stage || 'analysis-failed',
+    error: finalError,
+    attempts,
+  });
+  return res.status(500).json({ error: `Script failed after ${MAX_ANALYSIS_SCRIPT_ATTEMPTS} attempts: ${finalError}` });
 });
 
 // ============================================================
@@ -2414,6 +2971,9 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`OpenSlides server running on http://localhost:${PORT}`);
 });
+server.requestTimeout = OPENAI_COMPATIBLE_TIMEOUT_MS + 60000;
+server.headersTimeout = OPENAI_COMPATIBLE_TIMEOUT_MS + 65000;
+server.keepAliveTimeout = 65000;

